@@ -1,8 +1,9 @@
 ## US 2023 ID.4 gateway development candidate
 
 Based on infiniteCable2's sunnypilot. This branch addresses the observed US 2023
-E8 ID.4 firmware match and optional battery-telemetry CAN errors. Automated tests
-pass, but raw vehicle-log replay and on-device validation remain outstanding.
+E8 ID.4 firmware match, gateway detection, BSM detection and optional battery
+telemetry. Automated tests and saved-log receive replay pass; the updated build
+still needs on-device parked verification and driving evaluation.
 
 Candidate installer: `https://installer.comma.ai/ianp-1/id4-2023-gateway`
 
