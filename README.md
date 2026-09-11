@@ -1,4 +1,15 @@
-## ✍ To install this fork use installer.comma.ai/infiniteCable2/master (Comma Four compatible)
+## US 2023 ID.4 gateway development candidate
+
+Based on infiniteCable2's sunnypilot. This branch addresses the observed US 2023
+E8 ID.4 firmware match and optional battery-telemetry CAN errors. Automated tests
+pass, but raw vehicle-log replay and on-device validation remain outstanding.
+
+Candidate installer: `https://installer.comma.ai/ianp-1/id4-2023-gateway`
+
+Read [the scope, validation results, and remaining checks](docs/id4-2023-gateway.md)
+before installation. This candidate has not been road-validated.
+
+Original upstream installer: `installer.comma.ai/infiniteCable2/master`.
 
 ![](https://user-images.githubusercontent.com/47793918/233812617-beab2e71-57b9-479e-8bff-c3931347ca40.png)
 

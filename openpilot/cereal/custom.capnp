@@ -510,6 +510,7 @@ struct CarStateIC @0xfc6241ed8877b611 {
     voltage @5 :Float32;
     current @6 :Float32;
     power @7 :Float32;
+    valid @8 :Bool;
   }
 }
 

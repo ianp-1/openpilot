@@ -63,6 +63,9 @@ class BatteryDetails(Widget):
     car_state_ic = sm["carStateIC"]
 
     battery_data = car_state_ic.batteryDetails
+    if not battery_data.valid:
+      self._reset_values()
+      return
     self._capacity      = float(battery_data.capacity)
     self._charge        = float(battery_data.charge)
     self._soc           = float(battery_data.soc)
