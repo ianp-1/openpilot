@@ -50,7 +50,7 @@ class CarController(CarControllerBase):
     if self.frame % self.CCP.STEER_STEP == 0:
       apply_torque = 0
       if self.CP.flags & VolkswagenFlags.MEB:
-        if CC.latActive:
+        if CC.latActive and CS.out.cruiseState.available:
           hca_enabled = True
           apply_curvature = actuators.curvature + (CS.curvature_meas - CC.currentCurvature)
           apply_curvature = self.CCP.CURVATURE_LIMITS.apply_limits(apply_curvature, self.apply_curvature_last, CS.out.vEgoRaw,

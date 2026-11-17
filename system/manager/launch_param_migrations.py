@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import sys
+import urllib.request
 
 from pathlib import Path
 from typing import Protocol
@@ -40,6 +42,76 @@ SPEED_LIMIT_VISIBILITY_MIGRATION_MARKER = ".starpilot_speed_limit_visibility_v1"
 DEVICE_SHUTDOWN_HOURS_MIGRATION_MARKER = ".starpilot_device_shutdown_hours_v1"
 CAMERA_VIEW_DEFAULT_MIGRATION_MARKER = ".starpilot_camera_view_default_v1"
 REVERSE_CRUISE_REMOVAL_MIGRATION_MARKER = ".starpilot_remove_reverse_cruise_v1"
+CRV_ID4_FORK_SEED_MARKER = ".crv_id4_fork_seed_v1"
+
+CRV_ID4_SEED_BOOLS = {
+  "AlphaLongitudinalEnabled": True,
+  "DisableOpenpilotLongitudinal": False,
+  "AutomaticUpdates": False,
+  "ForceFingerprint": False,
+  "BoschARadar": True,
+  "HondaLiveLearningGas": True,
+  "AlwaysOnLateral": True,
+  "AlwaysOnLateralLKAS": True,
+  "PauseAOLOnBrake": False,
+  "CustomPersonalities": True,
+  "LaneChangeCloseGap": True,
+  "QOLLongitudinal": True,
+  "QOLLateral": True,
+  "QOLVisuals": True,
+  "LongitudinalTune": True,
+  "AdvancedLongitudinalTune": True,
+  "LateralTune": True,
+  "AdvancedLateralTune": True,
+  "SshEnabled": True,
+}
+
+CRV_ID4_SEED_INTS = {
+  "LKASButtonControl": 9,
+  "LongitudinalPersonality": 0,
+}
+
+CRV_ID4_SEED_FLOATS = {
+  "AggressiveFollow": 1.2,
+  "AggressiveFollowHigh": 1.0,
+  "AggressiveJerkAcceleration": 50.0,
+  "AggressiveJerkDeceleration": 50.0,
+  "AggressiveJerkDanger": 100.0,
+  "AggressiveJerkSpeed": 50.0,
+  "AggressiveJerkSpeedDecrease": 50.0,
+  "StandardFollow": 1.35,
+  "StandardFollowHigh": 1.15,
+  "StandardJerkAcceleration": 70.0,
+  "StandardJerkDeceleration": 70.0,
+  "StandardJerkDanger": 100.0,
+  "StandardJerkSpeed": 70.0,
+  "StandardJerkSpeedDecrease": 70.0,
+  "RelaxedFollow": 1.55,
+  "RelaxedFollowHigh": 1.35,
+  "RelaxedJerkAcceleration": 100.0,
+  "RelaxedJerkDeceleration": 100.0,
+  "RelaxedJerkDanger": 100.0,
+  "RelaxedJerkSpeed": 100.0,
+  "RelaxedJerkSpeedDecrease": 100.0,
+  "LaneChangeCloseGapSeconds": 0.6,
+  "CustomCruise": 1.0,
+  "CustomCruiseLong": 5.0,
+}
+
+CRV_LEARNER_SEED_FLOATS = {
+  "HondaGasFactorParams": 0.8000000347587553,
+  "HondaWindFactorParams": 1.2499985214255849,
+}
+
+CRV_LEARNER_META = {
+  "car_fingerprint": "HONDA_CRV_5G",
+  "learn_version": 2,
+}
+
+CRV_ID4_SSH_GITHUB_USER = "ianp-1"
+CRV_ID4_SSH_KEYS_URL = f"https://github.com/{CRV_ID4_SSH_GITHUB_USER}.keys"
+AGNOS_DIR = Path("/AGNOS")
+HONDA_LEARNER_META_PATH = Path("/data/honda_learner_meta.json")
 MARKER_DIRNAME = ".starpilot_param_migrations"
 
 LATERAL_METHOD_PARAM_SUFFIXES = (
@@ -389,11 +461,54 @@ def apply_launch_param_migrations(params: ParamsLike, marker_path: Path | None =
   )
 
 
+def _crv_id4_fork_seed_marker_path(params: ParamsLike) -> Path:
+  return _marker_dir_path(params) / CRV_ID4_FORK_SEED_MARKER
+
+
+def apply_crv_id4_fork_seed(params: ParamsLike, marker_path: Path | None = None) -> None:
+  marker = marker_path or _crv_id4_fork_seed_marker_path(params)
+  if marker.exists():
+    return
+
+  marker.parent.mkdir(parents=True, exist_ok=True)
+
+  for key, value in CRV_ID4_SEED_BOOLS.items():
+    params.put_bool(key, value)
+  for key, value in CRV_ID4_SEED_INTS.items():
+    params.put_int(key, value)
+  for key, value in CRV_ID4_SEED_FLOATS.items():
+    params.put_float(key, value)
+
+  if not _param_file_exists(params, "HondaGasFactorParams"):
+    for key, value in CRV_LEARNER_SEED_FLOATS.items():
+      params.put_float(key, value)
+
+  if AGNOS_DIR.is_dir() and not HONDA_LEARNER_META_PATH.exists():
+    HONDA_LEARNER_META_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HONDA_LEARNER_META_PATH.write_text(json.dumps(CRV_LEARNER_META) + "\n", encoding="utf-8")
+
+  if hasattr(params, "put"):
+    if not _param_file_exists(params, "GithubUsername"):
+      params.put("GithubUsername", CRV_ID4_SSH_GITHUB_USER)
+    if not _param_file_exists(params, "GithubSshKeys"):
+      try:
+        with urllib.request.urlopen(CRV_ID4_SSH_KEYS_URL, timeout=4) as resp:
+          keys_text = resp.read().decode("utf-8")
+        if keys_text.strip():
+          params.put("GithubSshKeys", keys_text)
+      except Exception:
+        pass
+
+  marker.touch()
+
+
 def main() -> int:
   try:
     from openpilot.common.params import Params
 
-    apply_launch_param_migrations(Params())
+    params = Params()
+    apply_launch_param_migrations(params)
+    apply_crv_id4_fork_seed(params)
   except Exception as exc:
     print(f"launch_param_migrations.py failed: {exc}", file=sys.stderr)
     return 1

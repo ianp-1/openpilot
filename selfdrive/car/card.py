@@ -336,6 +336,8 @@ class Car:
         self.starpilot_toggles,
         desired_speed_limit=desired_speed_limit,
       )
+    elif not self.sm['carControl'].enabled and self.CC_prev.enabled:
+      self.resume_prev_button = False
 
     # TODO: mirror the carState.cruiseState struct?
     CS.vCruise = float(self.v_cruise_helper.v_cruise_kph)

@@ -24,6 +24,9 @@ class CarState(CarStateBase):
     self.travel_assist_available = False
     self.curvature_meas = 0.
     self.klr_stock_values = {}
+    self.accel_hard_latched = False
+    self.decel_hard_latched = False
+    self.meb_main_button_prev: bool | None = None
 
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
     if not self.CP.pcmCruise:
@@ -231,10 +234,26 @@ class CarState(CarStateBase):
     self.klr_stock_values = pt_cp.vl["KLR_01"] if self.CP.flags & VolkswagenFlags.STOCK_KLR_PRESENT else {}
 
     ret.buttonEvents = self.create_button_events(pt_cp, self.CCP.BUTTONS)
+    main_button = bool(self.gra_stock_values["GRA_Hauptschalter"])
+    if self.meb_main_button_prev is not None and main_button != self.meb_main_button_prev:
+      if not any(b.type == ButtonType.cancel for b in ret.buttonEvents):
+        ret.buttonEvents.append(structs.CarState.ButtonEvent(pressed=main_button, type=ButtonType.cancel))
+    self.meb_main_button_prev = main_button
     ret.lowSpeedAlert = self.update_low_speed_alert(ret.vEgo)
 
+    fp_ret = custom.StarPilotCarState.new_message()
+    tip_hoch = bool(self.gra_stock_values["GRA_Tip_Hoch"])
+    tip_runter = bool(self.gra_stock_values["GRA_Tip_Runter"])
+    tip_stufe_2 = bool(self.gra_stock_values["GRA_Tip_Stufe_2"])
+    accel_hard = tip_hoch and (tip_stufe_2 or self.accel_hard_latched)
+    decel_hard = tip_runter and (tip_stufe_2 or self.decel_hard_latched)
+    fp_ret.accelHardCruise = accel_hard or self.accel_hard_latched
+    fp_ret.decelHardCruise = decel_hard or self.decel_hard_latched
+    self.accel_hard_latched = accel_hard
+    self.decel_hard_latched = decel_hard
+
     self.frame += 1
-    return ret, custom.StarPilotCarState.new_message()
+    return ret, fp_ret
 
   def update_pq(self, pt_cp, cam_cp, ext_cp) -> structs.CarState:
     ret = structs.CarState()

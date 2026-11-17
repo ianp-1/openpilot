@@ -794,8 +794,13 @@ class StarPilotVariables:
     advanced_longitudinal_tuning = toggle.openpilot_longitudinal and self.get_value("AdvancedLongitudinalTune")
     ev_vehicle = default_ev_tuning_enabled(CP)
 
-    if self.params_raw.get("EVTuning") in (None, b""):
-      self.params.put_bool("EVTuning", ev_vehicle)
+    if self.params_raw.get("EVTuning") in (None, b"") or getattr(CP, "brand", "mock") not in ("", "mock"):
+      self.params.put_bool("EVTuning", ev_vehicle and not self.params.get_bool("TruckTuning"))
+
+    if getattr(CP, "brand", "mock") not in ("", "mock"):
+      target_cam_offset = 0.11 if str(getattr(CP, "carFingerprint", "")).startswith("VOLKSWAGEN_ID4") else 0.0
+      if not math.isclose(self.params.get_float("CameraOffset"), target_cam_offset, abs_tol=1e-4):
+        self.params.put_float("CameraOffset", target_cam_offset)
 
     if self.params_raw.get("TruckTuning") in (None, b""):
       self.params.put_bool("TruckTuning", False)
