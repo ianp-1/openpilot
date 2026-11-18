@@ -231,8 +231,10 @@ class TestVolkswagenPlatformConfigs:
 
     for i in range(5):
       _step_once(False, 0.0, 0.011, i)
-    first_active_curv = _step_once(True, 0.011, 0.011, 5)
-    assert abs(first_active_curv - 0.008) < 2e-5
+    assert abs(cc.meb_curvature_offset_filtered - (-0.003)) < 1e-6
+    active_curvs = [_step_once(True, 0.011, 0.011, 5 + i) for i in range(40)]
+    assert max(active_curvs) <= 0.008 + 2e-5
+    assert abs(active_curvs[-1] - 0.008) < 2e-5
 
   def test_spare_part_fw_pattern(self, subtests):
     # Relied on for determining if a FW is likely VW
