@@ -101,3 +101,30 @@ def test_follow_policy_bypasses_post_departure_handoff():
   result = run(lead(d_rel=46.0, v_lead=22.0), v_ego=20.0, previous=0.0, raw=0.6, post_departure=True)
   assert result.target == pytest.approx(0.6)
   assert result.accel_cap is None
+
+
+def test_follow_policy_slews_upward_matched_brake_floor_release():
+  # Matched follow (v_ego=25, headway=1.45, relative_speed=1.6, a_lead=-0.33) gives
+  # _matched_brake_floor < -FOLLOW_TRANSITION_MAX_BRAKE (-0.25). Releasing upward from
+  # a deeper brake (-1.202) must slew smoothly instead of jumping straight to the floor.
+  matched_lead = lead(d_rel=36.25, v_lead=23.4, a_lead=-0.33, radar=True)
+  result = run(matched_lead, v_ego=25.0, previous=-1.202, raw=-1.202)
+
+  assert result.brake_floor is not None
+  assert result.brake_floor < -0.25
+  assert result.target == pytest.approx(-1.202 + 0.06)
+
+
+def test_follow_policy_keeps_downward_and_unmatched_braking_unclipped():
+  matched_lead = lead(d_rel=36.25, v_lead=23.4, a_lead=-0.33, radar=True)
+  downward = run(matched_lead, v_ego=25.0, previous=0.0, raw=-1.202)
+  assert downward.target == pytest.approx(downward.brake_floor)
+
+  deeper_downward = run(matched_lead, v_ego=25.0, previous=-0.10, raw=-0.50)
+  assert deeper_downward.target == pytest.approx(deeper_downward.brake_floor)
+
+  # Without a matched follow floor, upward transitions below -0.25 remain unclipped.
+  unmatched_lead = lead(d_rel=36.25, v_lead=23.4, a_lead=-0.50, radar=True)
+  unmatched = run(unmatched_lead, v_ego=25.0, previous=-1.202, raw=-0.35)
+  assert unmatched.brake_floor is None
+  assert unmatched.target == pytest.approx(-0.35)
