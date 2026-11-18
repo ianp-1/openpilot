@@ -1,3 +1,4 @@
+import math
 import random
 import re
 from types import SimpleNamespace
@@ -181,16 +182,16 @@ class TestVolkswagenPlatformConfigs:
     assert abs(mid_15mph[-1] - 0.010) < 2e-5
     assert abs(high_speed[-1] - 0.006) < 2e-5
 
-    # Alternating ~2 Hz curvature wave (0.26s half-period at 50 Hz = 13 steps per half-cycle)
-    osc = ([0.0015] * 13 + [-0.0015] * 13) * 6
+    # ~2 Hz sinusoidal curvature wave (25 steps per period at 50 Hz; tau=0.08s gain ~0.705)
+    osc = [0.0015 * math.sin(2.0 * math.pi * 2.0 * (i * 0.02)) for i in range(150)]
     low_osc = self._run_meb_hca03_curvatures(3.0, osc)
     osc_15mph = self._run_meb_hca03_curvatures(6.7, osc)
     mid_osc = self._run_meb_hca03_curvatures(15.0, osc)
     override_osc = self._run_meb_hca03_curvatures(6.7, osc, steering_pressed=True)
-    low_ptp = max(low_osc[-26:]) - min(low_osc[-26:])
-    ptp_15mph = max(osc_15mph[-26:]) - min(osc_15mph[-26:])
-    mid_ptp = max(mid_osc[-26:]) - min(mid_osc[-26:])
-    override_ptp = max(override_osc[-26:]) - min(override_osc[-26:])
+    low_ptp = max(low_osc[-50:]) - min(low_osc[-50:])
+    ptp_15mph = max(osc_15mph[-50:]) - min(osc_15mph[-50:])
+    mid_ptp = max(mid_osc[-50:]) - min(mid_osc[-50:])
+    override_ptp = max(override_osc[-50:]) - min(override_osc[-50:])
     assert low_ptp < mid_ptp * 0.75
     assert abs(ptp_15mph - low_ptp) < 2e-5
     assert abs(override_ptp - mid_ptp) < 2e-4
