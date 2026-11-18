@@ -124,21 +124,36 @@ def calculate_lane_width(lane_line1, lane_line2, road_edge=None):
   return float(distance_to_lane)
 
 
+CURVE_HORIZON_SECONDS = 5.5
+PROFILE_MIN_SPEED = 3.0
+
+
 # Credit goes to Pfeiferj!
 def calculate_road_curvature(modelData, v_ego):
-  orientation_rate = np.array(modelData.orientationRate.z)
-  timebase = np.array(modelData.orientationRate.t)
-  velocity = np.array(modelData.velocity.x)
+  orientation_rate = np.array(modelData.orientationRate.z, dtype=float)
+  timebase = np.array(modelData.orientationRate.t, dtype=float)
+  velocity = np.array(modelData.velocity.x, dtype=float)
+  if len(orientation_rate) == 0 or not (len(orientation_rate) == len(timebase) == len(velocity)):
+    return 0.0, 1.0
 
-  lateral_acceleration = orientation_rate * velocity
-  index = np.argmax(np.abs(lateral_acceleration))
-  predicted_lateral_acc = float(lateral_acceleration[index])
-  time_to_curve = float(timebase[index])
+  horizon_mask = timebase <= CURVE_HORIZON_SECONDS
+  if np.any(horizon_mask):
+    orientation_rate = orientation_rate[horizon_mask]
+    timebase = timebase[horizon_mask]
+    velocity = velocity[horizon_mask]
 
-  return float(predicted_lateral_acc / max(v_ego, 1)**2), max(time_to_curve, 1)
+  if not (np.all(np.isfinite(orientation_rate)) and
+          np.all(np.isfinite(timebase)) and
+          np.all(np.isfinite(velocity))):
+    return 0.0, 1.0
 
-
-PROFILE_MIN_SPEED = 3.0
+  curvatures = np.where(
+    velocity >= PROFILE_MIN_SPEED,
+    orientation_rate / np.maximum(velocity, PROFILE_MIN_SPEED),
+    0.0,
+  )
+  index = int(np.argmax(np.abs(curvatures)))
+  return float(curvatures[index]), max(float(timebase[index]), 1.0)
 PROFILE_MAX_CURVATURE = 0.1
 
 

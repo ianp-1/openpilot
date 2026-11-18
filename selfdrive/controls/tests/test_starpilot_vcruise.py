@@ -5,7 +5,7 @@ import pytest
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.common.starpilot_variables import PLANNER_TIME
-from openpilot.starpilot.controls.lib.curve_speed_controller import CSC_MAX_DECEL_RATE, PARAM_REFRESH_FRAMES, CurveSpeedController
+from openpilot.starpilot.controls.lib.curve_speed_controller import CSC_MAX_ACCEL_RATE, CSC_MAX_DECEL_RATE, PARAM_REFRESH_FRAMES, CurveSpeedController
 from openpilot.starpilot.controls.lib.starpilot_vcruise import (
   FORCE_STOP_CAP_SLACK_M,
   FORCE_STOP_TURN_VETO_STOP_SEEN_HOLD_TIME,
@@ -354,7 +354,46 @@ def test_curve_speed_controller_does_not_slow_for_curve_speed_above_ego():
 
   controller.update_target(30.0)
 
-  assert controller.target == pytest.approx(30.0)
+  assert controller.target == pytest.approx(30.0 + CSC_MAX_ACCEL_RATE * DT_MDL)
+
+
+def test_curve_speed_controller_ignores_gentle_curve_above_vcruise_and_caps_medium_curve():
+  planner, vcruise = make_vcruise(road_curvature=0.0015)
+  planner.starpilot_weather = SimpleNamespace(weather_id=0, reduce_lateral_acceleration=0.0)
+  planner.time_to_curve = 2.0
+  vcruise.csc.lateral_acceleration = 2.5
+  sm = make_sm(standstill=False)
+  toggles = make_toggles()
+  toggles.curve_speed_controller = True
+
+  # Gentle highway curve while accelerating below set speed: must not freeze at v_ego.
+  planner.road_curvature_detected = True
+  result = vcruise.update(
+    controls_enabled=True,
+    now=10.0,
+    time_validated=True,
+    v_cruise=33.5,
+    v_ego=27.0,
+    sm=sm,
+    starpilot_toggles=toggles,
+  )
+  assert result == pytest.approx(33.5)
+  assert not vcruise.csc_controlling_speed
+
+  # Medium curve where csc_speed sits between v_ego and v_cruise: allow accelerating up to csc_speed.
+  planner.road_curvature = 0.0055
+  expected_csc = (2.5 / 0.0055) ** 0.5
+  result = vcruise.update(
+    controls_enabled=True,
+    now=10.05,
+    time_validated=True,
+    v_cruise=24.6,
+    v_ego=17.0,
+    sm=sm,
+    starpilot_toggles=toggles,
+  )
+  assert result == pytest.approx(expected_csc)
+  assert vcruise.csc_controlling_speed
 
 
 def test_active_slc_control_target_applies_offset_and_cluster_diff():

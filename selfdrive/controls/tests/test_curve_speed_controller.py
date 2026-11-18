@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 from openpilot.common.realtime import DT_MDL
 from openpilot.starpilot.common.starpilot_variables import DEFAULT_LATERAL_ACCELERATION
+from openpilot.starpilot.common.starpilot_utilities import CURVE_HORIZON_SECONDS, calculate_road_curvature
 from openpilot.starpilot.controls.lib.curve_speed_controller import (
+  CSC_MAX_ACCEL_RATE,
   CSC_MAX_DECEL_RATE,
   CSC_MIN_SPEED,
   LAT_ACCEL_MAX,
@@ -73,18 +75,35 @@ def test_first_update_seeds_at_current_speed_and_curve_update_brakes():
   assert controller.target == pytest.approx(20.0 - expected_decel)
 
 
-def test_target_does_not_drop_below_curve_speed_and_tracks_ego_speed():
-  _, controller = make_controller(road_curvature=0.1, time_to_curve=0.1)
+def test_target_does_not_drop_below_curve_speed_and_ramps_smoothly_on_exit():
+  planner, controller = make_controller(lateral_acceleration=2.5, road_curvature=0.1, time_to_curve=0.1)
   controller.update_target(20.0)
 
   for _ in range(200):
     controller.update_target(20.0)
 
-  curve_speed = max(np.sqrt(DEFAULT_LATERAL_ACCELERATION / 0.1), CSC_MIN_SPEED)
+  curve_speed = max(np.sqrt(2.5 / 0.1), CSC_MIN_SPEED)
   assert controller.target == pytest.approx(curve_speed)
 
+  # Stay at curve_speed rather than freezing at a slower current v_ego.
   controller.update_target(10.0)
-  assert controller.target == pytest.approx(10.0)
+  assert controller.target == pytest.approx(curve_speed)
+
+  # When the curve opens up above target and v_ego, ramp upward smoothly instead of freezing at v_ego.
+  planner.road_curvature = 0.004
+  controller.target = 18.0
+  controller.update_target(18.0)
+  assert controller.target == pytest.approx(18.0 + CSC_MAX_ACCEL_RATE * DT_MDL)
+
+
+def test_calculate_road_curvature_uses_bounded_horizon_geometric_curvature():
+  model = SimpleNamespace(
+    orientationRate=SimpleNamespace(z=[0.02, 0.04, 0.5], t=[1.0, 4.0, CURVE_HORIZON_SECONDS + 2.0]),
+    velocity=SimpleNamespace(x=[25.0, 25.0, 25.0]),
+  )
+  curvature, time_to_curve = calculate_road_curvature(model, v_ego=15.0)
+  assert curvature == pytest.approx(0.04 / 25.0)
+  assert time_to_curve == pytest.approx(4.0)
 
 
 def test_weather_reduces_the_curve_target():

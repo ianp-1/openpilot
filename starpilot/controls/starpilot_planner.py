@@ -216,7 +216,11 @@ class StarPilotPlanner:
     self.road_curvature, self.time_to_curve = calculate_road_curvature(sm["modelV2"], v_ego)
     self.curve_profile = extract_curve_profile(sm["modelV2"])
 
-    self.road_curvature_detected = (1 / abs(self.road_curvature))**0.5 < v_ego > CRUISING_SPEED and not (sm["carState"].leftBlinker or sm["carState"].rightBlinker)
+    self.road_curvature_detected = (
+      abs(self.road_curvature) * (v_ego ** 2) > 1.0
+      and v_ego > CRUISING_SPEED
+      and not (sm["carState"].leftBlinker or sm["carState"].rightBlinker)
+    )
 
     if not sm["carState"].standstill:
       self.tracking_lead = self.update_lead_status(v_ego)

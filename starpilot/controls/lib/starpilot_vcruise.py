@@ -574,10 +574,17 @@ class StarPilotVCruise:
     csc_curve_detected = csc_available and self.starpilot_planner.road_curvature_detected
     if csc_curve_detected:
       self.csc.update_target(v_ego)
-
-      self.csc_controlling_speed = True
-      self.csc_target = self.csc.target
-      self.csc_curve_last_seen_at = now
+      if self.csc.target < v_cruise or getattr(self.csc, "curve_speed", float("inf")) < v_cruise:
+        self.csc_controlling_speed = True
+        self.csc_target = self.csc.target
+        self.csc_curve_last_seen_at = now
+      else:
+        self.csc.log_data(v_ego, sm)
+        self.csc_controlling_speed = False
+        self.csc.target_set = False
+        self.csc.curve_speed = float("inf")
+        self.csc_curve_last_seen_at = None
+        self.csc_target = v_cruise
     else:
       csc_release_hold = bool(
         csc_available and
@@ -590,6 +597,7 @@ class StarPilotVCruise:
 
         self.csc_controlling_speed = False
         self.csc.target_set = False
+        self.csc.curve_speed = float("inf")
         self.csc_curve_last_seen_at = None
 
         self.csc_target = v_cruise

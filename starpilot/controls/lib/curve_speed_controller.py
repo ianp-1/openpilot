@@ -8,6 +8,7 @@ from openpilot.starpilot.common.starpilot_variables import CITY_SPEED_LIMIT, DEF
 
 CSC_MIN_SPEED = CITY_SPEED_LIMIT * CV.MPH_TO_MS
 CSC_MAX_DECEL_RATE = 1.5
+CSC_MAX_ACCEL_RATE = 1.2
 
 # Static lateral-accel target, m/s^2. The settings slider spans LAT_ACCEL_MIN..LAT_ACCEL_MAX
 # in 0.1 steps; the clamp here is the defense against a hand-edited param.
@@ -50,6 +51,7 @@ class CurveSpeedController:
     self.enable_training = False
     self.target_set = False
     self.target = 0.0
+    self.curve_speed = float("inf")
 
     self._frame = 0
     self.lateral_acceleration = DEFAULT_LATERAL_ACCELERATION
@@ -83,20 +85,31 @@ class CurveSpeedController:
     if self._frame % PARAM_REFRESH_FRAMES == 0:
       self.update_lateral_acceleration()
 
-  def update_target(self, v_ego):
+  def _curve_speed(self):
     lateral_acceleration = self.lateral_acceleration
     if self.starpilot_planner.starpilot_weather.weather_id != 0:
       lateral_acceleration -= self.lateral_acceleration * self.starpilot_planner.starpilot_weather.reduce_lateral_acceleration
 
-    if self.target_set:
-      csc_speed = (lateral_acceleration / abs(self.starpilot_planner.road_curvature))**0.5
-      csc_speed = max(float(csc_speed), CSC_MIN_SPEED)
-      if csc_speed >= v_ego:
-        self.target = v_ego
-      else:
-        time_to_curve = max(float(self.starpilot_planner.time_to_curve), DT_MDL)
-        decel_rate = float(np.clip((v_ego - csc_speed) / time_to_curve, 0.0, CSC_MAX_DECEL_RATE))
-        self.target = float(np.clip(self.target - decel_rate * DT_MDL, csc_speed, v_ego))
-    else:
+    curvature = abs(float(self.starpilot_planner.road_curvature))
+    if curvature <= 1e-6:
+      return float("inf")
+    return max(float((lateral_acceleration / curvature) ** 0.5), CSC_MIN_SPEED)
+
+  def update_target(self, v_ego):
+    csc_speed = self._curve_speed()
+    self.curve_speed = csc_speed
+    if not self.target_set:
       self.target_set = True
-      self.target = v_ego
+      self.target = float(v_ego) if csc_speed < v_ego else csc_speed
+      return
+
+    if csc_speed >= v_ego:
+      if self.target >= csc_speed:
+        self.target = csc_speed
+      else:
+        base_speed = max(float(self.target), float(v_ego))
+        self.target = float(min(base_speed + CSC_MAX_ACCEL_RATE * DT_MDL, csc_speed))
+    else:
+      time_to_curve = max(float(self.starpilot_planner.time_to_curve), DT_MDL)
+      decel_rate = float(np.clip((v_ego - csc_speed) / time_to_curve, 0.0, CSC_MAX_DECEL_RATE))
+      self.target = float(np.clip(self.target - decel_rate * DT_MDL, csc_speed, v_ego))
