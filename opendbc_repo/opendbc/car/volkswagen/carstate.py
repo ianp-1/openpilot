@@ -233,12 +233,13 @@ class CarState(CarStateBase):
     self.gra_stock_values = pt_cp.vl["GRA_ACC_01"]
     self.klr_stock_values = pt_cp.vl["KLR_01"] if self.CP.flags & VolkswagenFlags.STOCK_KLR_PRESENT else {}
 
-    ret.buttonEvents = self.create_button_events(pt_cp, self.CCP.BUTTONS)
+    button_events = self.create_button_events(pt_cp, self.CCP.BUTTONS)
     main_button = bool(self.gra_stock_values["GRA_Hauptschalter"])
     if self.meb_main_button_prev is not None and main_button != self.meb_main_button_prev:
-      if not any(b.type == ButtonType.cancel for b in ret.buttonEvents):
-        ret.buttonEvents.append(structs.CarState.ButtonEvent(pressed=main_button, type=ButtonType.cancel))
+      if not any(b.type == ButtonType.cancel for b in button_events):
+        button_events.append(structs.CarState.ButtonEvent(pressed=main_button, type=ButtonType.cancel))
     self.meb_main_button_prev = main_button
+    ret.buttonEvents = button_events
     ret.lowSpeedAlert = self.update_low_speed_alert(ret.vEgo)
 
     fp_ret = custom.StarPilotCarState.new_message()
