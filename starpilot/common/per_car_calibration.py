@@ -62,10 +62,13 @@ def _extract_fingerprint(cp_or_bytes) -> str:
 def _serialize_cp(cp):
   if isinstance(cp, (bytes, bytearray)):
     return bytes(cp)
-  if hasattr(cp, "as_reader"):
-    return cp.as_reader().to_bytes()
   if hasattr(cp, "to_bytes"):
-    return cp.to_bytes()
+    if hasattr(cp, "clear_write_flag"):
+      cp.clear_write_flag()
+    out = cp.to_bytes()
+    if hasattr(cp, "clear_write_flag"):
+      cp.clear_write_flag()
+    return out
   return cp
 
 
