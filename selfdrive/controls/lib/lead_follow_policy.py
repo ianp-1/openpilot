@@ -149,7 +149,8 @@ def _matched_brake_floor(lead, v_ego: float, t_follow: float) -> float | None:
   return -min(0.32, decel + 0.05 * deficit)
 
 
-def _transition_target(lead, v_ego: float, t_follow: float, previous: float, target: float) -> float | None:
+def _transition_target(lead, v_ego: float, t_follow: float, previous: float, target: float,
+                       *, floor: float | None = None) -> float | None:
   if lead is None or not lead.status:
     return None
   if abs(float(target) - float(previous)) < 0.06:
@@ -157,8 +158,14 @@ def _transition_target(lead, v_ego: float, t_follow: float, previous: float, tar
   if _lead_brake(lead) > 0.8:
     return None
   # The follow smoother may shape small MPC reversals, but it must never turn
-  # an already meaningful braking request into a coast request.
-  if float(target) < -FOLLOW_TRANSITION_MAX_BRAKE:
+  # an already meaningful braking request into a coast request or delay downward
+  # braking. Only upward release while a matched-follow floor is active slews.
+  matched_floor_release = (
+    floor is not None and
+    float(target) > float(previous) and
+    _lead_brake(lead) <= FOLLOW_MAX_LEAD_BRAKE
+  )
+  if float(target) < -FOLLOW_TRANSITION_MAX_BRAKE and not matched_floor_release:
     return None
 
   closing = max(0.0, float(v_ego) - float(lead.vLead))
@@ -173,6 +180,10 @@ def _transition_target(lead, v_ego: float, t_follow: float, previous: float, tar
   down_step = float(np.interp(closing, [0.0, FOLLOW_MAX_CLOSING], [0.06, 0.18]))
   if float(previous) * float(target) < 0.0:
     up_step = down_step = FOLLOW_SIGN_CROSS_STEP
+
+  if float(target) < -FOLLOW_TRANSITION_MAX_BRAKE:
+    limited = min(float(target), float(previous) + up_step)
+    return limited if abs(limited - float(target)) > 1e-6 else None
 
   limited = float(np.clip(target, float(previous) - down_step, float(previous) + up_step))
   return limited if abs(limited - float(target)) > 1e-6 else None
@@ -219,7 +230,7 @@ def apply(lead_one, lead_two, *, source: str, active: bool, v_ego: float, t_foll
   if deadband_target != target:
     target = deadband_target
   else:
-    transition = _transition_target(lead, v_ego, t_follow, previous_target, target)
+    transition = _transition_target(lead, v_ego, t_follow, previous_target, target, floor=floor)
     if transition is not None:
       target = transition
   return FollowResult(lead, cap, floor, target)

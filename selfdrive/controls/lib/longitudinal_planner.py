@@ -113,6 +113,7 @@ STANDSTILL_LEAD_DEPART_MAX_EGO_SPEED = 1.5
 STANDSTILL_LEAD_DEPART_MIN_LEAD_SPEED = 0.6
 STANDSTILL_LEAD_DEPART_MIN_GAP_MARGIN = 0.8
 STANDSTILL_LEAD_DEPART_MIN_MODEL_ACCEL = 0.08
+STANDSTILL_LEAD_DEPART_ROLLING_MIN_LEAD_ACCEL = -0.15
 STANDSTILL_LEAD_CREEP_RELEASE_MIN_ACCEL = 0.18
 STANDSTILL_LEAD_CREEP_RELEASE_CONFIRM_TIME = 0.30
 RADAR_STANDSTILL_GAP_SETTLE_ACCEL = 0.18
@@ -128,6 +129,8 @@ STANDSTILL_STOPPED_LEAD_GUARD_MIN_DISTANCE = 3.0
 STANDSTILL_STOPPED_LEAD_GUARD_DISTANCE_MARGIN = 3.0
 STANDSTILL_STOPPED_LEAD_GUARD_MIN_BRAKE = 0.16
 STANDSTILL_STOPPED_LEAD_GUARD_MAX_BRAKE = 0.26
+STANDSTILL_STOPPED_LEAD_GUARD_FADE_LEAD_SPEED = 0.20
+STANDSTILL_STOPPED_LEAD_GUARD_STOP_CAP = -0.02
 LEAD_DEPART_ACCEL_HOLD_TIME = 1.2
 LEAD_DEPART_ACCEL_HOLD_MAX_EGO_SPEED = 2.0
 # Engagement horizon for the close-lead brake cap. Was 25.0 s, which is not "close" by any reading of
@@ -495,6 +498,9 @@ LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MIN_LEAD_ACCEL = -0.4
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LEAD_ACCEL = 0.25
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MIN_ACCEL = 0.08
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_ACCEL = 0.22
+LOW_SPEED_WEAK_LEAD_ACCEL_CAP_FADE_MAX_LEAD_DELTA = 1.00
+LOW_SPEED_WEAK_LEAD_ACCEL_CAP_FADE_MAX_LEAD_ACCEL = 0.45
+LOW_SPEED_WEAK_LEAD_ACCEL_CAP_FADE_TARGET_ACCEL = 1.5
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_STRONG_DEPART_MAX_EGO_SPEED = 1.25
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_STRONG_DEPART_MIN_GAP = 4.0
 LOW_SPEED_WEAK_LEAD_ACCEL_CAP_STRONG_DEPART_MIN_LEAD_SPEED = 1.2
@@ -1504,8 +1510,17 @@ class LongitudinalPlanner:
       )
 
     slew_was_active = self.far_follow_output_slew_active
-    self.far_follow_output_slew_active = safe_far_follow
-    if not safe_far_follow or not slew_was_active:
+    if not safe_far_follow:
+      if slew_was_active and float(target) > float(prev_target):
+        released_target = float(prev_target) + self.far_follow_release_slew_rate * self.dt
+        if float(target) > released_target + 1e-6:
+          self.far_follow_output_slew_active = True
+          return float(released_target)
+      self.far_follow_output_slew_active = False
+      return target
+
+    self.far_follow_output_slew_active = True
+    if not slew_was_active:
       return target
 
     return float(np.clip(
@@ -1726,8 +1741,8 @@ class LongitudinalPlanner:
       d_rel > LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_DISTANCE or
       lead_speed > LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LEAD_SPEED or
       lead_lateral > LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LATERAL_OFFSET or
-      lead_delta > LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LEAD_DELTA or
-      lead_accel > LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LEAD_ACCEL
+      lead_delta > LOW_SPEED_WEAK_LEAD_ACCEL_CAP_FADE_MAX_LEAD_DELTA or
+      lead_accel > LOW_SPEED_WEAK_LEAD_ACCEL_CAP_FADE_MAX_LEAD_ACCEL
     ):
       return None
 
@@ -1756,9 +1771,21 @@ class LongitudinalPlanner:
       0.0, 1.0,
     ))
     cap_strength = float(np.clip(0.5 * distance_factor + 0.3 * delta_factor + 0.2 * accel_factor, 0.0, 1.0))
-    return LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MIN_ACCEL + (
+    base_cap = LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MIN_ACCEL + (
       LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_ACCEL - LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MIN_ACCEL
     ) * cap_strength
+    delta_fade = float(np.clip(
+      (lead_delta - LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LEAD_DELTA) /
+      max(LOW_SPEED_WEAK_LEAD_ACCEL_CAP_FADE_MAX_LEAD_DELTA - LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LEAD_DELTA, 0.01),
+      0.0, 1.0,
+    ))
+    accel_fade = float(np.clip(
+      (lead_accel - LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LEAD_ACCEL) /
+      max(LOW_SPEED_WEAK_LEAD_ACCEL_CAP_FADE_MAX_LEAD_ACCEL - LOW_SPEED_WEAK_LEAD_ACCEL_CAP_MAX_LEAD_ACCEL, 0.01),
+      0.0, 1.0,
+    ))
+    fade = max(delta_fade, accel_fade)
+    return float(np.interp(fade, [0.0, 1.0], [base_cap, LOW_SPEED_WEAK_LEAD_ACCEL_CAP_FADE_TARGET_ACCEL]))
 
   def get_honda_accord_stop_go_accel_target(self, lead, v_ego, previous_target, target, blocked):
     """Smooth the Accord's low-speed lead launch without touching braking targets."""
@@ -1802,14 +1829,17 @@ class LongitudinalPlanner:
     max_lead_speed = get_standstill_stopped_lead_guard_max_lead_speed(
       self.CP, STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_SPEED,
     )
+    fade_width = STANDSTILL_STOPPED_LEAD_GUARD_FADE_LEAD_SPEED
+    fade_max_lead_speed = max_lead_speed + fade_width
+    fade_max_lead_delta = STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_DELTA + fade_width
     max_distance = max(
       STANDSTILL_STOPPED_LEAD_GUARD_MIN_DISTANCE,
       float(stop_distance) + get_standstill_stopped_lead_guard_distance_margin(self.CP),
     )
     if (
       float(getattr(lead, "dRel", float("inf"))) > max_distance or
-      lead_speed > max_lead_speed or
-      lead_delta > STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_DELTA
+      lead_speed > fade_max_lead_speed or
+      lead_delta > fade_max_lead_delta
     ):
       return None
 
@@ -1826,7 +1856,13 @@ class LongitudinalPlanner:
       STANDSTILL_STOPPED_LEAD_GUARD_MIN_BRAKE,
       STANDSTILL_STOPPED_LEAD_GUARD_MAX_BRAKE,
     ))
-    brake_floor = -hold_brake
+    speed_fade = float(np.clip((lead_speed - max_lead_speed) / fade_width, 0.0, 1.0))
+    delta_fade = float(np.clip(
+      (lead_delta - STANDSTILL_STOPPED_LEAD_GUARD_MAX_LEAD_DELTA) / fade_width,
+      0.0, 1.0,
+    ))
+    fade = max(speed_fade, delta_fade)
+    brake_floor = 0.0 if fade >= 1.0 else -hold_brake * (1.0 - fade)
     return brake_floor if accel_min >= 0.0 else max(accel_min, brake_floor)
 
   def post_departure_follow_settle_active(self, lead, v_ego, t_follow):
@@ -2770,10 +2806,15 @@ class LongitudinalPlanner:
     )
     confident_depart_detected = any(self.is_confident_lead_depart(lead, float(sm['carState'].vEgo))
                                     for lead in (self.lead_one, self.lead_two))
+    is_standstill = bool(sm['carState'].standstill)
     lead_depart_ready = any(
       lead.status and
       lead.vLead >= STANDSTILL_LEAD_DEPART_MIN_LEAD_SPEED and
-      lead.dRel >= standstill_nudge_gap + STANDSTILL_LEAD_DEPART_MIN_GAP_MARGIN
+      lead.dRel >= standstill_nudge_gap + STANDSTILL_LEAD_DEPART_MIN_GAP_MARGIN and
+      (is_standstill or (
+        float(lead.vLead) >= scene_v_ego and
+        float(getattr(lead, "aLeadK", 0.0)) >= STANDSTILL_LEAD_DEPART_ROLLING_MIN_LEAD_ACCEL
+      ))
       for lead in (self.lead_one, self.lead_two)
     )
     depart_safety_veto = (not bool(getattr(starpilot_toggles, "radar_takeoffs", False))
@@ -2882,7 +2923,8 @@ class LongitudinalPlanner:
       ]
       if standstill_stopped_lead_guard_caps:
         standstill_stopped_lead_guard_cap = min(standstill_stopped_lead_guard_caps)
-        output_should_stop = True
+        if standstill_stopped_lead_guard_cap <= STANDSTILL_STOPPED_LEAD_GUARD_STOP_CAP:
+          output_should_stop = True
 
     if lead_control_active and sm['carState'].standstill and moving_leads and not depart_safety_veto:
       output_a_target = max(output_a_target, STANDSTILL_LEAD_NUDGE_ACCEL)

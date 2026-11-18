@@ -4278,3 +4278,236 @@ def test_near_duplicate_lead_source_hysteresis_skips_distinct_leads():
 
   assert lead_0_bias == 0.0
   assert lead_1_bias == 0.0
+
+
+def test_rolling_lead_depart_ready_does_not_pulse_while_braking_behind_slowing_lead():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+
+  # Slowing/slower rolling lead (e.g. 00000032--26 at 1.2 m/s, vLead=0.76, aLead=-1.04)
+  planner_slow = LongitudinalPlanner(CP, init_v=1.2)
+  sm_slow = make_sm(
+    1.2,
+    desired_accel=-0.82,
+    min_accel=-1.5,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=7.5, v_lead=0.76, a_lead=-1.04, radar=True, model_prob=1.0),
+  )
+  sm_slow["carState"].standstill = False
+  sm_slow["controlsState"].longControlState = LongCtrlState.pid
+  sm_slow["starpilotPlan"].vCruise = 10.0
+  sm_slow["modelV2"].action.shouldStop = False
+  planner_slow.update(sm_slow, make_toggles("v15"))
+  assert planner_slow.output_a_target < 0.0
+  assert planner_slow.post_departure_follow_settle_until == 0.0
+
+  # Faster-than-ego lead that is braking hard (aLeadK < -0.15) while rolling must not trigger depart boost
+  planner_braking = LongitudinalPlanner(CP, init_v=0.65)
+  sm_braking = make_sm(
+    0.65,
+    desired_accel=-0.50,
+    min_accel=-1.5,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=6.4, v_lead=0.74, a_lead=-0.38, radar=True, model_prob=1.0),
+  )
+  sm_braking["carState"].standstill = False
+  sm_braking["controlsState"].longControlState = LongCtrlState.pid
+  sm_braking["starpilotPlan"].vCruise = 10.0
+  sm_braking["modelV2"].action.shouldStop = False
+  planner_braking.update(sm_braking, make_toggles("v15"))
+  assert planner_braking.output_a_target < 0.0
+  assert planner_braking.post_departure_follow_settle_until == 0.0
+
+  # Actually departing rolling lead (vLead >= v_ego and aLeadK >= -0.15) keeps depart assist
+  planner_depart = LongitudinalPlanner(CP, init_v=0.8)
+  sm_depart = make_sm(
+    0.8,
+    desired_accel=0.10,
+    min_accel=-1.5,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=7.5, v_lead=1.9, a_lead=0.10, radar=True, model_prob=1.0),
+  )
+  sm_depart["carState"].standstill = False
+  sm_depart["controlsState"].longControlState = LongCtrlState.pid
+  sm_depart["starpilotPlan"].vCruise = 10.0
+  sm_depart["modelV2"].action.shouldStop = False
+  planner_depart.update(sm_depart, make_toggles("v15"))
+  assert planner_depart.output_a_target >= longitudinal_planner_module.STANDSTILL_LEAD_DEPART_MIN_ACCEL
+  assert planner_depart.post_departure_follow_settle_until > 0.0
+
+  # Standstill launch behavior remains untouched when carState.standstill is True
+  planner_standstill = LongitudinalPlanner(CP, init_v=0.0)
+  sm_standstill = make_sm(
+    0.0,
+    desired_accel=0.20,
+    min_accel=-1.5,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=7.5, v_lead=1.1, a_lead=-0.20, radar=True, model_prob=1.0),
+  )
+  sm_standstill["carState"].standstill = True
+  sm_standstill["controlsState"].longControlState = LongCtrlState.stopping
+  sm_standstill["starpilotPlan"].vCruise = 10.0
+  sm_standstill["modelV2"].action.shouldStop = False
+  planner_standstill.update(sm_standstill, make_toggles("v15"))
+  assert not planner_standstill.output_should_stop
+  assert planner_standstill.output_a_target >= longitudinal_planner_module.STANDSTILL_LEAD_DEPART_MIN_ACCEL
+
+
+def test_low_speed_weak_lead_accel_cap_feathers_smoothly_across_upper_bounds():
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=2.0)
+
+  # Interior point matches existing exact formula
+  interior = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=2.5, a_lead=0.10, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  expected_interior = 0.08 + 0.14 * (0.5 * (6.0 / 14.0) + 0.3 * (1.0 / 1.25) + 0.2 * (0.5 / 0.65))
+  assert interior == pytest.approx(expected_interior)
+
+  # Feather across lead_delta in [0.75, 1.00] -> 1.5, None above 1.00
+  delta_75 = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=2.75, a_lead=0.10, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  delta_875 = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=2.875, a_lead=0.10, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  delta_100 = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=3.00, a_lead=0.10, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  delta_101 = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=3.01, a_lead=0.10, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  assert delta_75 < delta_875 < delta_100
+  assert delta_875 == pytest.approx(0.5 * (delta_75 + 1.5))
+  assert delta_100 == pytest.approx(1.5)
+  assert delta_101 is None
+
+  # Feather across lead_accel in [0.25, 0.45] -> 1.5, None above 0.45
+  accel_25 = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=2.40, a_lead=0.25, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  accel_35 = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=2.40, a_lead=0.35, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  accel_45 = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=2.40, a_lead=0.45, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  accel_46 = planner.get_low_speed_weak_lead_accel_cap(
+    make_lead(status=True, d_rel=10.0, v_lead=2.40, a_lead=0.46, radar=True, model_prob=1.0),
+    v_ego=2.0,
+  )
+  assert accel_25 < accel_35 < accel_45
+  assert accel_35 == pytest.approx(0.5 * (accel_25 + 1.5))
+  assert accel_45 == pytest.approx(1.5)
+  assert accel_46 is None
+
+
+def test_standstill_stopped_lead_guard_cap_fades_smoothly_above_max_lead_speed(monkeypatch):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+
+  cap_44 = planner.get_standstill_stopped_lead_guard_cap(
+    make_lead(status=True, d_rel=2.56, v_lead=0.44, a_lead=0.0, radar=True, model_prob=1.0),
+    v_ego=0.0, accel_min=-0.5, stop_distance=5.5, release_ready=False, confident_depart_ready=False,
+  )
+  cap_45 = planner.get_standstill_stopped_lead_guard_cap(
+    make_lead(status=True, d_rel=2.56, v_lead=0.45, a_lead=0.0, radar=True, model_prob=1.0),
+    v_ego=0.0, accel_min=-0.5, stop_distance=5.5, release_ready=False, confident_depart_ready=False,
+  )
+  cap_50 = planner.get_standstill_stopped_lead_guard_cap(
+    make_lead(status=True, d_rel=2.56, v_lead=0.50, a_lead=0.0, radar=True, model_prob=1.0),
+    v_ego=0.0, accel_min=-0.5, stop_distance=5.5, release_ready=False, confident_depart_ready=False,
+  )
+  cap_55 = planner.get_standstill_stopped_lead_guard_cap(
+    make_lead(status=True, d_rel=2.56, v_lead=0.55, a_lead=0.0, radar=True, model_prob=1.0),
+    v_ego=0.0, accel_min=-0.5, stop_distance=5.5, release_ready=False, confident_depart_ready=False,
+  )
+  cap_65 = planner.get_standstill_stopped_lead_guard_cap(
+    make_lead(status=True, d_rel=2.56, v_lead=0.65, a_lead=0.0, radar=True, model_prob=1.0),
+    v_ego=0.0, accel_min=-0.5, stop_distance=5.5, release_ready=False, confident_depart_ready=False,
+  )
+  cap_66 = planner.get_standstill_stopped_lead_guard_cap(
+    make_lead(status=True, d_rel=2.56, v_lead=0.66, a_lead=0.0, radar=True, model_prob=1.0),
+    v_ego=0.0, accel_min=-0.5, stop_distance=5.5, release_ready=False, confident_depart_ready=False,
+  )
+
+  assert cap_44 == pytest.approx(-(0.22 + 0.02 * (0.44 / 0.45) + 0.02 * 0.12))
+  assert cap_45 == pytest.approx(-0.242)
+  assert cap_50 == pytest.approx(-0.180)
+  assert cap_55 == pytest.approx(-0.120)
+  assert cap_65 == pytest.approx(0.0, abs=1e-6)
+  assert cap_66 is None
+
+  # Planner update keeps stop asserted at v_lead=0.50 without +0.15 snap
+  sm = make_sm(
+    0.0,
+    desired_accel=0.15,
+    min_accel=-0.5,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=2.56, v_lead=0.50, a_lead=0.0, radar=True, model_prob=1.0),
+  )
+  sm["carState"].standstill = True
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["starpilotPlan"].vCruise = 10.0
+  sm["modelV2"].action.shouldStop = False
+  planner.update(sm, make_toggles("v15"))
+  assert planner.output_should_stop
+  assert planner.output_a_target <= -0.15
+
+  # Near zero guard fade (cap > -0.02), guard caps accel smoothly without forcing output_should_stop
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", lambda *args, **kwargs: (0.15, False))
+  sm["radarState"].leadOne.vLead = 0.64
+  sm["radarState"].leadOne.vLeadK = 0.64
+  planner.update(sm, make_toggles("v15"))
+  assert not planner.output_should_stop
+  assert planner.output_a_target <= 0.0
+
+
+def test_far_follow_output_slew_ramps_upward_exit_and_bypasses_braking():
+  v_ego = 24.0
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  planner.lead_one = make_lead(status=True, d_rel=58.0, v_lead=24.0, model_prob=0.99)
+  planner.lead_two = make_lead(status=False)
+
+  _, release_rate = get_far_follow_output_slew_rates(CP)
+  initial = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=0.0, target=-0.866, output_should_stop=False, panic_bypass=False,
+  )
+  assert initial == pytest.approx(-0.866)
+  assert planner.far_follow_output_slew_active
+
+  # Headway dips below 1.35s (safe_far_follow becomes False) while target releases upward
+  planner.lead_one.dRel = 31.8
+  current = initial
+  steps = 0
+  while planner.far_follow_output_slew_active and steps < 20:
+    current = planner.get_vehicle_far_follow_slew_target(
+      v_ego, prev_target=current, target=-0.496, output_should_stop=False, panic_bypass=False,
+    )
+    steps += 1
+    if steps == 1:
+      assert current == pytest.approx(initial + release_rate * planner.dt)
+      assert planner.far_follow_output_slew_active
+  assert current == pytest.approx(-0.496)
+  assert not planner.far_follow_output_slew_active
+
+  # Downward braking during exit returns immediately without slew delay
+  planner.far_follow_output_slew_active = True
+  braking = planner.get_vehicle_far_follow_slew_target(
+    v_ego, prev_target=-0.50, target=-1.20, output_should_stop=False, panic_bypass=False,
+  )
+  assert braking == pytest.approx(-1.20)
+  assert not planner.far_follow_output_slew_active

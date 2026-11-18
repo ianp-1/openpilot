@@ -8,7 +8,16 @@ import openpilot.selfdrive.controls.lib.longcontrol_vehicle_tunes as vehicle_tun
 from opendbc.car.gm.values import CAR, GMFlags
 from opendbc.car.honda.values import CAR as HONDA_CAR
 from opendbc.car.subaru.values import CAR as SUBARU_CAR
+from opendbc.can import CANPacker, CANParser
+from opendbc.car import Bus
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR
+from opendbc.car.volkswagen import mebcan
+from opendbc.car.volkswagen.values import (
+  CAR as VW_CAR,
+  CarControllerParams as VWCarControllerParams,
+  DBC as VW_DBC,
+  VolkswagenFlags,
+)
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.longcontrol import (
   LongControl,
@@ -1657,3 +1666,193 @@ def test_leaving_experimental_does_not_reset_mode_transition_timer():
     lc.update_mpc_mode(False)
 
   assert not lc.transitioning
+
+
+def test_volkswagen_meb_stop_ease_smoothly_ramps_without_weakening_urgent_stops():
+  id4_cp = make_longcontrol_cp(
+    brand="volkswagen",
+    carFingerprint=VW_CAR.VOLKSWAGEN_ID4_MK1,
+    flags=VolkswagenFlags.MEB.value,
+    stopAccel=-0.55,
+  )
+  tuning = vehicle_tunes.LongControlVehicleTuning(id4_cp)
+  assert tuning.is_volkswagen_meb
+
+  eased = -1.0
+  for _ in range(120):
+    next_accel = tuning.shape_stopping_accel(
+      output_accel=-1.0,
+      a_target=-0.20,
+      should_stop=True,
+      v_ego=0.0,
+      has_lead=True,
+      stop_accel=-0.55,
+    )
+    assert next_accel >= eased
+    assert next_accel - eased <= vehicle_tunes.VOLKSWAGEN_MEB_FINAL_STOP_RELEASE_RATE * DT_CTRL + 1e-9
+    eased = next_accel
+  assert eased == pytest.approx(-0.35)
+
+  # Speed-dependent cap & never raising above a_target when a_target < meb_stop_cap
+  tuning.reset()
+  for _ in range(90):
+    mid_speed = tuning.shape_stopping_accel(-1.0, -0.20, True, 0.25, True, -0.55)
+  assert mid_speed == pytest.approx(-0.42)
+
+  tuning.reset()
+  for _ in range(90):
+    capped_to_target = tuning.shape_stopping_accel(-1.0, -0.60, True, 0.0, True, -0.55)
+  assert capped_to_target == pytest.approx(-0.60)
+
+  # Urgent stop (-1.5) stays full strength immediately
+  assert tuning.shape_stopping_accel(-1.0, -1.5, True, 0.0, True, -0.55) == pytest.approx(-1.0)
+  assert tuning.shape_stopping_accel(-1.5, -1.5, True, 0.0, True, -0.55) == pytest.approx(-1.5)
+
+  # should_stop=False clears tracking and leaves output untouched
+  assert tuning.shape_stopping_accel(-1.0, -0.20, False, 0.0, True, -0.55) == pytest.approx(-1.0)
+  assert tuning.meb_stopping_accel is None
+
+  # Multi-frame LongControl.update eases ID.4 from -1.0 toward -0.35 even with l2_enable active
+  lc = LongControl(id4_cp)
+  lc._long_tune = SimpleNamespace(
+    refresh=lambda: None,
+    stopping={
+      "l2_enable": 1.0,
+      "hold_accel": -0.6,
+      "phase_switch_v": 0.15,
+      "proximity_scale_m": 8.0,
+      "pitch_margin": 1.0,
+    },
+  )
+  lc.long_control_state = LongCtrlState.stopping
+  lc.last_output_accel = -1.0
+  CS = car.CarState.new_message(vEgo=0.0, aEgo=0.0, brakePressed=False)
+  CS.cruiseState.standstill = True
+  toggles = make_toggles(stopAccel=-0.55, stoppingDecelRate=0.8, vEgoStopping=0.5, vEgoStarting=0.1)
+  urgent_out = lc.update(
+    active=True,
+    CS=CS,
+    a_target=-1.5,
+    should_stop=True,
+    accel_limits=(-3.5, 2.0),
+    starpilot_toggles=toggles,
+    has_lead=True,
+  )
+  assert urgent_out == pytest.approx(-1.0)
+  prev_lc = urgent_out
+  for _ in range(120):
+    out = lc.update(
+      active=True,
+      CS=CS,
+      a_target=-0.20,
+      should_stop=True,
+      accel_limits=(-3.5, 2.0),
+      starpilot_toggles=toggles,
+      has_lead=True,
+    )
+    assert out >= prev_lc
+    prev_lc = out
+  assert prev_lc == pytest.approx(-0.35, abs=0.01)
+
+  # Honda CR-V 5G (stopAccel=-2.0) is completely untouched
+  crv_cp = make_longcontrol_cp(
+    brand="honda",
+    carFingerprint=HONDA_CAR.HONDA_CRV_5G,
+    stopAccel=-2.0,
+  )
+  crv_tuning = vehicle_tunes.LongControlVehicleTuning(crv_cp)
+  assert not crv_tuning.is_volkswagen_meb
+  assert crv_tuning.shape_stopping_accel(-2.0, -0.20, True, 0.0, True, -2.0) == pytest.approx(-2.0)
+
+
+def test_volkswagen_meb_acc_18_comfort_and_anfahren():
+  id4_cp = make_longcontrol_cp(
+    brand="volkswagen",
+    carFingerprint=VW_CAR.VOLKSWAGEN_ID4_MK1,
+    flags=VolkswagenFlags.MEB.value,
+  )
+  ccp = VWCarControllerParams(id4_cp)
+  dbc_name = VW_DBC[VW_CAR.VOLKSWAGEN_ID4_MK1][Bus.pt]
+  packer = CANPacker(dbc_name)
+  parser = CANParser(dbc_name, [("ACC_18", 0)], 0)
+
+  # Launching (HMS == ANFAHREN == 4) sets ACC_Anfahren=1, Regelabw_unten=0.12, pos jerk=2.4, neg jerk=1.5
+  launch_msgs = mebcan.create_acc_accel_control(packer, 0, ccp, 2, True, 0.6, 3, 4, False, 0.0, True)
+  parser.update([(1, launch_msgs)])
+  assert parser.vl["ACC_18"]["ACC_Anfahren"] == 1
+  assert parser.vl["ACC_18"]["ACC_zul_Regelabw_unten"] == pytest.approx(0.12, abs=1e-6)
+  assert parser.vl["ACC_18"]["ACC_pos_Sollbeschl_Grad_02"] == pytest.approx(2.4, abs=1e-6)
+  assert parser.vl["ACC_18"]["ACC_neg_Sollbeschl_Grad_02"] == pytest.approx(1.5, abs=1e-6)
+
+  # Mild decel (-0.4) uses comfort jerks (pos=1.6, neg=1.5) and ACC_Anfahren=0
+  cruise_msgs = mebcan.create_acc_accel_control(packer, 0, ccp, 2, True, -0.4, 3, 0, False, 30.0, True)
+  parser.update([(2, cruise_msgs)])
+  assert parser.vl["ACC_18"]["ACC_Anfahren"] == 0
+  assert parser.vl["ACC_18"]["ACC_zul_Regelabw_unten"] == pytest.approx(0.12, abs=1e-6)
+  assert parser.vl["ACC_18"]["ACC_pos_Sollbeschl_Grad_02"] == pytest.approx(1.6, abs=1e-6)
+  assert parser.vl["ACC_18"]["ACC_neg_Sollbeschl_Grad_02"] == pytest.approx(1.5, abs=1e-6)
+
+  # Emergency decel (-2.0 / -3.0) scales neg jerk up to JERK_LIMIT (4.0)
+  emerg_msgs = mebcan.create_acc_accel_control(packer, 0, ccp, 2, True, -2.0, 3, 0, False, 30.0, True)
+  parser.update([(3, emerg_msgs)])
+  assert parser.vl["ACC_18"]["ACC_neg_Sollbeschl_Grad_02"] == pytest.approx(4.0, abs=1e-6)
+
+  # Inactive accel zeroes tolerance and jerk limits
+  held_msgs = mebcan.create_acc_accel_control(packer, 0, ccp, 2, True, ccp.ACCEL_INACTIVE, 3, 1, False, 0.0, True)
+  parser.update([(4, held_msgs)])
+  assert parser.vl["ACC_18"]["ACC_Anfahren"] == 0
+  assert parser.vl["ACC_18"]["ACC_zul_Regelabw_unten"] == pytest.approx(0.0, abs=1e-6)
+  assert parser.vl["ACC_18"]["ACC_neg_Sollbeschl_Grad_02"] == pytest.approx(0.0, abs=1e-6)
+  assert parser.vl["ACC_18"]["ACC_pos_Sollbeschl_Grad_02"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_volkswagen_meb_hold_type_early_exit_guard_and_release():
+  id4_cp = make_longcontrol_cp(
+    brand="volkswagen",
+    carFingerprint=VW_CAR.VOLKSWAGEN_ID4_MK1,
+    flags=VolkswagenFlags.MEB.value,
+  )
+  ccp = VWCarControllerParams(id4_cp)
+  sm = mebcan.MebLongStateMachine(id4_cp, ccp)
+  halten = sm.acc_hold_type_vals["HALTEN"]
+  anfahren = sm.acc_hold_type_vals["ANFAHREN"]
+  ramp = sm.acc_hold_type_vals["LOESEN_UEBER_RAMPE"]
+
+  def make_inputs(v_ego, esp_hold, state, accel):
+    cs_out = car.CarState.new_message(vEgo=v_ego)
+    cs_out.cruiseState.available = True
+    cs = SimpleNamespace(out=cs_out, esp_hold_confirmation=esp_hold)
+    cc = car.CarControl.new_message(enabled=True, longActive=True)
+    cc.actuators.longControlState = state
+    cc.actuators.accel = accel
+    return cs, cc
+
+  # Enter stopping -> HALTEN
+  cs, cc = make_inputs(0.03, False, LongCtrlState.stopping, -0.5)
+  _, _, hold_type, braking_to_stop = sm.update(cs, cc, -0.5)
+  assert hold_type == halten
+  assert braking_to_stop
+
+  # Borderline stopping -> pid before ESC_50.Standstill stays in HALTEN
+  cs, cc = make_inputs(0.03, False, LongCtrlState.pid, 0.15)
+  _, _, hold_type, _ = sm.update(cs, cc, 0.15)
+  assert hold_type == halten
+
+  # Once ESC_50.Standstill arrives, transitions cleanly to ANFAHREN
+  cs, cc = make_inputs(0.0, True, LongCtrlState.pid, 0.5)
+  _, _, hold_type, _ = sm.update(cs, cc, 0.5)
+  assert hold_type == anfahren
+
+  # Strong launch (>= 0.25) from HALTEN without esp_hold releases via LOESEN_UEBER_RAMPE
+  cs, cc = make_inputs(0.03, False, LongCtrlState.stopping, -0.5)
+  sm.update(cs, cc, -0.5)
+  cs, cc = make_inputs(0.03, False, LongCtrlState.pid, 0.25)
+  _, _, hold_type, _ = sm.update(cs, cc, 0.25)
+  assert hold_type == ramp
+
+  # Moving >= 0.08 m/s (0.09 in float32 CarState) from HALTEN without esp_hold also releases via LOESEN_UEBER_RAMPE
+  cs, cc = make_inputs(0.03, False, LongCtrlState.stopping, -0.5)
+  sm.update(cs, cc, -0.5)
+  cs, cc = make_inputs(0.09, False, LongCtrlState.pid, 0.10)
+  _, _, hold_type, _ = sm.update(cs, cc, 0.10)
+  assert hold_type == ramp

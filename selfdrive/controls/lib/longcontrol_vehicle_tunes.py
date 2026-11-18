@@ -3,6 +3,7 @@ import numpy as np
 from opendbc.car.gm.values import CAR, GMFlags
 from opendbc.car.subaru.values import CAR as SUBARU_CAR
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR
+from opendbc.car.volkswagen.values import VolkswagenFlags
 from openpilot.common.realtime import DT_CTRL
 from openpilot.starpilot.common.testing_grounds import testing_ground
 
@@ -59,6 +60,11 @@ HYUNDAI_ELANTRA_STOPPED_LEAD_MAX_CREEP_ACCEL = 0.05
 HYUNDAI_SANTA_FE_FINAL_STOP_MAX_SPEED = 1.0
 HYUNDAI_SANTA_FE_FINAL_STOP_CAP_BP = [0.0, 0.2, 0.5, HYUNDAI_SANTA_FE_FINAL_STOP_MAX_SPEED]
 HYUNDAI_SANTA_FE_FINAL_STOP_CAP_V = [-0.25, -0.30, -0.50, -0.90]
+VOLKSWAGEN_MEB_FINAL_STOP_MAX_SPEED = 0.8
+VOLKSWAGEN_MEB_FINAL_STOP_CAP_BP = [0.0, 0.25, VOLKSWAGEN_MEB_FINAL_STOP_MAX_SPEED]
+VOLKSWAGEN_MEB_FINAL_STOP_CAP_V = [-0.35, -0.42, -0.85]
+VOLKSWAGEN_MEB_FINAL_STOP_MAX_TARGET = 0.1
+VOLKSWAGEN_MEB_FINAL_STOP_RELEASE_RATE = 0.8
 
 
 def get_bolt_acc_pedal_friction_bias(output_accel, a_target, v_ego):
@@ -154,6 +160,9 @@ class LongControlVehicleTuning:
       getattr(CP, "carFingerprint", None) == CAR.CHEVROLET_BOLT_ACC_2022_2023_PEDAL and
       (CP.flags & GMFlags.PEDAL_LONG.value)
     )
+    self.is_volkswagen_meb = bool(
+      CP.brand == "volkswagen" and (CP.flags & VolkswagenFlags.MEB.value)
+    )
     self.reset()
 
   def reset(self):
@@ -167,9 +176,31 @@ class LongControlVehicleTuning:
     self.toyota_corolla_target_filter_initialized = False
     self.bolt_start_handoff_frames = 0
     self.subaru_stop_release_frames = 0
+    self.meb_stopping_accel = None
 
   def shape_stopping_accel(self, output_accel, a_target, should_stop, v_ego, has_lead, stop_accel):
     """Release a stale hard lead brake once the stop target has eased."""
+    if not (
+      self.is_volkswagen_meb and
+      should_stop and
+      v_ego <= VOLKSWAGEN_MEB_FINAL_STOP_MAX_SPEED and
+      a_target <= VOLKSWAGEN_MEB_FINAL_STOP_MAX_TARGET
+    ):
+      self.meb_stopping_accel = None
+    else:
+      meb_stop_cap = float(interp(v_ego, VOLKSWAGEN_MEB_FINAL_STOP_CAP_BP, VOLKSWAGEN_MEB_FINAL_STOP_CAP_V))
+      if a_target > output_accel:
+        desired = min(float(a_target), meb_stop_cap)
+        if desired >= float(output_accel):
+          prior = float(output_accel) if self.meb_stopping_accel is None else self.meb_stopping_accel
+          shaped = min(desired, prior + VOLKSWAGEN_MEB_FINAL_STOP_RELEASE_RATE * DT_CTRL)
+        else:
+          shaped = float(output_accel)
+      else:
+        shaped = float(output_accel)
+      self.meb_stopping_accel = shaped
+      return shaped
+
     if (
       self.is_hyundai_santa_fe_2022 and
       v_ego <= HYUNDAI_SANTA_FE_FINAL_STOP_MAX_SPEED and
