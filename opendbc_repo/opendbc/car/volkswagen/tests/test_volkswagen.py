@@ -1,9 +1,13 @@
 import random
 import re
+from types import SimpleNamespace
 
-from opendbc.car.structs import CarParams
+from opendbc.can import CANParser
+from opendbc.car import Bus
+from opendbc.car.structs import CarControl, CarParams
+from opendbc.car.volkswagen.carcontroller import CarController
 from opendbc.car.volkswagen.interface import CarInterface
-from opendbc.car.volkswagen.values import CAR, FW_QUERY_CONFIG, WMI, VolkswagenFlags, VolkswagenSafetyFlags
+from opendbc.car.volkswagen.values import CAR, DBC, FW_QUERY_CONFIG, WMI, VolkswagenFlags, VolkswagenSafetyFlags
 from opendbc.car.volkswagen.fingerprints import FW_VERSIONS
 
 Ecu = CarParams.Ecu
@@ -66,6 +70,62 @@ class TestVolkswagenPlatformConfigs:
 
     assert abs(taos_cp.longitudinalActuatorDelay - 0.25) < 1e-6
     assert abs(golf_cp.longitudinalActuatorDelay - 0.15) < 1e-6
+
+  def test_meb_steer_actuator_delay(self):
+    for car in self.MEB_CARS:
+      cp = self._get_meb_params(car)
+      assert abs(cp.steerActuatorDelay - 0.2) < 1e-6
+
+    golf_cp = CarInterface.get_non_essential_params(CAR.VOLKSWAGEN_GOLF_MK7)
+    assert abs(golf_cp.steerActuatorDelay - 0.1) < 1e-6
+
+  @staticmethod
+  def _run_meb_hca03_override_power(steering_torque_sequence):
+    cp = TestVolkswagenPlatformConfigs._get_meb_params(CAR.VOLKSWAGEN_ID4_MK1, gateway=True, alpha_long=False)
+    cc = CarController(DBC[cp.carFingerprint], cp)
+    parser = CANParser(DBC[cp.carFingerprint][Bus.pt], [("HCA_03", 0)], cc.CAN.pt)
+
+    CC = CarControl.new_message()
+    CC.enabled = True
+    CC.latActive = True
+    CC.currentCurvature = 0.0
+    CC.actuators.curvature = 0.0
+    cc_reader = CC.as_reader()
+
+    powers = []
+    for step, steering_torque in enumerate(steering_torque_sequence):
+      CS = SimpleNamespace(
+        out=SimpleNamespace(
+          cruiseState=SimpleNamespace(available=True),
+          vEgo=15.0,
+          vEgoRaw=15.0,
+          steeringTorque=steering_torque,
+          steeringPressed=abs(steering_torque) > cc.CCP.STEER_DRIVER_ALLOWANCE,
+        ),
+        curvature_meas=0.0,
+        ldw_stock_values={},
+        gra_stock_values={"COUNTER": 0},
+      )
+      for sub in range(cc.CCP.STEER_STEP):
+        t_ns = (step * cc.CCP.STEER_STEP + sub) * 10_000_000
+        _, can_sends = cc.update(cc_reader, CS, t_ns, None)
+        hca_msgs = [msg for msg in can_sends if msg[0] == 0x303]
+        if hca_msgs:
+          parser.update([(t_ns, hca_msgs)])
+          powers.append(parser.vl["HCA_03"]["Power"])
+    return powers
+
+  def test_meb_hca03_power_symmetric_driver_override(self):
+    warmup = [0.0] * 25
+    left_powers = self._run_meb_hca03_override_power(warmup + [300.0] * 25)
+    right_powers = self._run_meb_hca03_override_power(warmup + [-300.0] * 25)
+
+    assert abs(left_powers[24] - 50.0) < 1e-6
+    assert abs(right_powers[24] - 50.0) < 1e-6
+    assert right_powers[25] < 50.0
+    assert right_powers == left_powers
+    assert abs(left_powers[-1] - 4.0) < 1e-6
+    assert abs(right_powers[-1] - 4.0) < 1e-6
 
   def test_spare_part_fw_pattern(self, subtests):
     # Relied on for determining if a FW is likely VW

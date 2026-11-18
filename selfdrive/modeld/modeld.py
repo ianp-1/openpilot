@@ -473,6 +473,25 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                   desiredAcceleration=float(desired_accel),
                                   shouldStop=bool(should_stop))
 
+
+def sync_inactive_lateral_prev_action(prev_action: log.ModelDataV2.Action, car_control,
+                                      car_control_alive: bool = True) -> log.ModelDataV2.Action:
+  """Anchor prev_action.desiredCurvature to actual curvature while lateral control is inactive."""
+  if not car_control_alive or bool(getattr(car_control, "latActive", False)):
+    return prev_action
+  try:
+    current_curvature = float(getattr(car_control, "currentCurvature", float("nan")))
+  except (TypeError, ValueError):
+    return prev_action
+  if not np.isfinite(current_curvature):
+    return prev_action
+  return log.ModelDataV2.Action(
+    desiredCurvature=current_curvature,
+    desiredAcceleration=float(prev_action.desiredAcceleration),
+    shouldStop=bool(prev_action.shouldStop),
+  )
+
+
 class FrameMeta:
   frame_id: int = 0
   timestamp_sof: int = 0
@@ -1531,6 +1550,8 @@ def main(demo=False):
     action_delay = DT_MDL / 2  # Target the midpoint between current output and the next model step.
     lat_action_t = lat_delay + frame_delay + action_delay
     long_action_t = long_delay + frame_delay + action_delay
+
+    prev_action = sync_inactive_lateral_prev_action(prev_action, sm["carControl"], sm.alive["carControl"])
 
     lateral_model_output = None
     longitudinal_model_output = None
