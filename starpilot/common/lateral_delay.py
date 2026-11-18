@@ -3,7 +3,7 @@ import math
 LATERAL_CONTROL_SOFTWARE_DELAY = 0.2
 VW_MEB_FLAG = 16  # VolkswagenFlags.MEB
 VW_MEB_LOW_SPEED_LAT_DELAY = 0.22
-VW_MEB_LAT_DELAY_BP = (5.0, 14.0)
+VW_MEB_LAT_DELAY_BP = (7.0, 15.0)
 
 
 def full_lateral_delay(vehicle_delay: float) -> float:

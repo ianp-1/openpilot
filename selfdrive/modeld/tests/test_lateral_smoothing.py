@@ -96,11 +96,11 @@ def test_sync_inactive_lateral_prev_action_guards_stale_or_nonfinite(car_control
 
 @pytest.mark.parametrize(("v_ego", "vehicle_smooth", "expected"), [
   (2.0, 0.22, 0.22),
-  (3.5, 0.22, 0.22),
-  (6.25, 0.22, 0.16),
-  (9.0, 0.22, 0.10),
+  (6.7, 0.22, 0.22),
+  (8.95, 0.22, 0.16),
+  (11.2, 0.22, 0.10),
   (30.0, 0.22, 0.10),
-  (3.5, 0.0, 0.10),
+  (6.7, 0.0, 0.10),
 ])
 def test_volkswagen_meb_lateral_smoothing_tapers_above_low_speed(v_ego, vehicle_smooth, expected):
   assert get_car_lateral_smooth_seconds("volkswagen", v_ego, 0.10, vehicle_smooth) == pytest.approx(expected)
@@ -113,7 +113,9 @@ def test_effective_lateral_delay_schedules_vw_meb_low_speed_only():
   honda_cp = SimpleNamespace(brand="honda", flags=0)
 
   assert get_effective_lateral_delay(meb_cp, 3.0, 0.40) == pytest.approx(0.22)
-  assert get_effective_lateral_delay(meb_cp, 9.5, 0.40) == pytest.approx(0.31)
+  assert get_effective_lateral_delay(meb_cp, 6.7, 0.40) == pytest.approx(0.22)
+  assert get_effective_lateral_delay(meb_cp, 11.0, 0.40) == pytest.approx(0.31)
+  assert get_effective_lateral_delay(meb_cp, 15.0, 0.40) == pytest.approx(0.40)
   assert get_effective_lateral_delay(meb_cp, 20.0, 0.40) == pytest.approx(0.40)
   assert get_effective_lateral_delay(meb_cp, 3.0, 0.40, use_custom_delay=True) == pytest.approx(0.40)
   assert get_effective_lateral_delay(mqb_cp, 3.0, 0.30) == pytest.approx(0.30)

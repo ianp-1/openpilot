@@ -49,3 +49,23 @@ def test_curvature_controller_uses_feedforward_during_driver_override():
                                        None, None, SimpleNamespace())
   assert state.active
   assert output == desired_curvature
+
+
+def test_curvature_controller_bleeds_integrator_below_pid_cutin():
+  controller, cs, vm, params = build_controller()
+  toggles = SimpleNamespace()
+  cs.vEgo = 20.0
+  for _ in range(100):
+    controller.update(True, cs, vm, params, False, 0.01, False, 0.2, None, None, toggles)
+  i_initial = abs(controller.pid.i)
+  assert i_initial > 1e-4
+
+  cs.vEgo = 5.0
+  for _ in range(50):
+    controller.update(True, cs, vm, params, False, 0.01, False, 0.2, None, None, toggles)
+  i_half_sec = abs(controller.pid.i)
+  assert 0.2 * i_initial < i_half_sec < 0.6 * i_initial
+
+  for _ in range(100):
+    controller.update(True, cs, vm, params, False, 0.01, False, 0.2, None, None, toggles)
+  assert abs(controller.pid.i) < 0.06 * i_initial

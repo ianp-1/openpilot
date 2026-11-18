@@ -10,10 +10,10 @@ from opendbc.car.volkswagen.values import CanBus, CarControllerParams, Volkswage
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
-MEB_LOW_SPEED_SMOOTH_BP = [4.5, 9.0]          # m/s (~10-20 mph)
+MEB_LOW_SPEED_SMOOTH_BP = [6.7, 11.2]         # m/s (~15-25 mph)
 MEB_LOW_SPEED_SMOOTH_TAU = [0.08, 0.0]        # s; 50 Hz curvature smoothing at low speed
 MEB_CURVATURE_OFFSET_TAU = 0.25               # s; LPF on (CS.curvature_meas - CC.currentCurvature)
-MEB_CURVATURE_OFFSET_SPEED_BP = [8.0, 12.0]   # m/s (~18-27 mph, straddling 10 m/s PID cut-in)
+MEB_CURVATURE_OFFSET_SPEED_BP = [8.5, 12.5]   # m/s (~19-28 mph, straddling 10 m/s PID cut-in)
 
 
 class CarController(CarControllerBase):
@@ -54,6 +54,12 @@ class CarController(CarControllerBase):
     alpha = 1.0 - float(np.exp(-dt / tau))
     return float(alpha * target + (1.0 - alpha) * prev)
 
+  def _clamped_curvature_offset(self, CS, CC) -> float:
+    offset = float(CS.curvature_meas - CC.currentCurvature)
+    if not np.isfinite(offset):
+      return 0.
+    return float(np.clip(offset, -self.CCP.CURVATURE_MAX, self.CCP.CURVATURE_MAX))
+
   def update(self, CC, CS, now_nanos, starpilot_toggles):
     actuators = CC.actuators
     hud_control = CC.hudControl
@@ -90,13 +96,13 @@ class CarController(CarControllerBase):
           hca_enabled = True
           apply_curvature = float(np.clip(CS.curvature_meas, -self.CCP.CURVATURE_MAX, self.CCP.CURVATURE_MAX))
           self.meb_curvature_filtered = apply_curvature
-          self.meb_curvature_offset_filtered = 0.
+          self.meb_curvature_offset_filtered = self._clamped_curvature_offset(CS, CC)
           steering_power = max(self.steering_power_last - self.CCP.STEERING_POWER_STEP, 0)
         else:
           hca_enabled = False
           apply_curvature = 0.
           self.meb_curvature_filtered = float(np.clip(CS.curvature_meas, -self.CCP.CURVATURE_MAX, self.CCP.CURVATURE_MAX))
-          self.meb_curvature_offset_filtered = 0.
+          self.meb_curvature_offset_filtered = self._clamped_curvature_offset(CS, CC)
           steering_power = 0
 
         can_sends.append(mebcan.create_steering_control(self.packer_pt, self.CAN.pt, apply_curvature, hca_enabled, steering_power))

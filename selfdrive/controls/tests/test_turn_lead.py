@@ -68,7 +68,8 @@ def test_rivian_control_smoothing_remains_speed_scheduled(v_ego, expected):
 
 @pytest.mark.parametrize(("v_ego", "vehicle_smooth", "expected"), [
   (2.5, 0.22, 0.22),
-  (6.25, 0.22, 0.16),
+  (6.7, 0.22, 0.22),
+  (8.95, 0.22, 0.16),
   (20.0, 0.22, 0.10),
   (2.5, 0.0, 0.10),
 ])

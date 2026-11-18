@@ -400,7 +400,7 @@ class CAR(Platforms):
       VWCarDocs("Volkswagen ID.4 2021-23"),
       VWCarDocs("Volkswagen ID.5 2022-23"),
     ],
-    VolkswagenCarSpecs(mass=2224, wheelbase=2.77),
+    VolkswagenCarSpecs(mass=2224, wheelbase=2.77, steerRatio=14.0),
     chassis_codes={"E2", "E8"},
     wmis={WMI.VOLKSWAGEN_USA_SUV, WMI.VOLKSWAGEN_EUROPE_CAR, WMI.VOLKSWAGEN_EUROPE_SUV},
     model_years={"M", "N", "P"},

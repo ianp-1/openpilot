@@ -49,6 +49,11 @@ class LatControlCurvature(LatControl):
       output_curvature = self.kf * desired_curvature
       curvature_log.active = True
     else:
+      self.pid.speed = CS.vEgo
+      if self.pid.k_p == 0.0 and self.pid.k_i == 0.0 and self.pid.i != 0.0:
+        self.pid.i *= math.exp(-self.pid.i_dt / 0.5)
+        if abs(self.pid.i) < 1e-6:
+          self.pid.i = 0.0
       output_curvature = self.pid.update(error, speed=CS.vEgo, feedforward=self.kf * desired_curvature)
       curvature_log.p = float(self.pid.p)
       curvature_log.i = float(self.pid.i)

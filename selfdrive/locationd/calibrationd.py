@@ -61,7 +61,7 @@ def moving_avg_with_linear_decay(prev_mean: np.ndarray, new_val: np.ndarray, idx
   return (idx*prev_mean + (block_size - idx) * new_val) / block_size
 
 class Calibrator:
-  def __init__(self, param_put: bool = False):
+  def __init__(self, param_put: bool = False, car_fingerprint: str | None = None):
     self.param_put = param_put
 
     self.not_car = False
@@ -69,6 +69,16 @@ class Calibrator:
     # Read saved calibration
     self.params = Params()
     calibration_params = self.params.get("CalibrationParams")
+    if param_put and calibration_params and car_fingerprint:
+      prev_cp_bytes = self.params.get("CarParamsPrevRoute")
+      if prev_cp_bytes:
+        try:
+          with car.CarParams.from_bytes(prev_cp_bytes) as prev_cp:
+            if prev_cp.carFingerprint and prev_cp.carFingerprint != car_fingerprint:
+              calibration_params = None
+              self.params.remove("CalibrationParams")
+        except Exception:
+          cloudlog.exception("Error checking CarParamsPrevRoute fingerprint")
     rpy_init = RPY_INIT
     wide_from_device_euler = WIDE_FROM_DEVICE_EULER_INIT
     height = HEIGHT_INIT
@@ -162,7 +172,10 @@ class Calibrator:
     # TODO: add height spread check with smooth transition too
     spread_too_high = self.calib_spread[1] > MAX_ALLOWED_PITCH_SPREAD or self.calib_spread[2] > MAX_ALLOWED_YAW_SPREAD
     if spread_too_high and self.cal_status == log.LiveCalibrationData.Status.calibrated:
-      self.reset(self.rpys[self.block_idx - 1], valid_blocks=1, smooth_from=self.rpy)
+      self.reset(self.rpys[self.block_idx - 1], valid_blocks=1,
+                 wide_from_device_euler_init=self.wide_from_device_eulers[self.block_idx - 1],
+                 height_init=self.heights[self.block_idx - 1],
+                 smooth_from=self.rpy)
       self.cal_status = log.LiveCalibrationData.Status.recalibrating
 
     write_this_cycle = (self.idx == 0) and (self.block_idx % (INPUTS_WANTED//5) == 5)
@@ -267,7 +280,7 @@ def main() -> NoReturn:
   params_reader = Params()
   CP = messaging.log_from_bytes(params_reader.get("CarParams", block=True), car.CarParams)
 
-  calibrator = Calibrator(param_put=True)
+  calibrator = Calibrator(param_put=True, car_fingerprint=CP.carFingerprint)
   calibrator.not_car = CP.notCar
 
   while 1:

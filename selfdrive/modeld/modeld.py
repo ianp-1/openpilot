@@ -124,7 +124,7 @@ EXTERNAL_GPU_EGMP_READY_MV = 12500
 EXTERNAL_GPU_POWER_STABLE_SECONDS = 3.0
 EXTERNAL_GPU_POWER_LOG_INTERVAL_SECONDS = 10.0
 LAT_SMOOTH_BP = [2.0, 8.0]
-VW_MEB_LAT_SMOOTH_BP = [3.5, 9.0]
+VW_MEB_LAT_SMOOTH_BP = [6.7, 11.2]
 MAX_ABS_EXTERNAL_MODEL_OUTPUT = 1e6
 
 
@@ -1426,6 +1426,8 @@ def main(demo=False):
     else:
       CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
   cloudlog.info("modeld got CarParams: %s", CP.brand)
+  camera_offset.set_target(params.get_float("CameraOffset", return_default=True))
+  camera_offset.offset = camera_offset.target_offset
   lat_delay_schedule = lateral_delay_schedule(CP)
 
   lat_smooth_seconds = _model_smooth_seconds(params, "LatSmoothSeconds", LAT_SMOOTH_SECONDS)
@@ -1495,7 +1497,7 @@ def main(demo=False):
     )
     lat_delay = lateral_delay + lat_smooth_seconds
     lateral_control_params = np.array([v_ego, lat_delay], dtype=np.float32)
-    if sm.frame % 60 == 0:
+    if sm.frame % 10 == 0:
       camera_offset.set_target(params.get_float("CameraOffset", return_default=True))
 
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:

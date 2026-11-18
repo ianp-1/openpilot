@@ -110,3 +110,22 @@ class TestCalibrationd:
     assert c.valid_blocks == 1
     assert c.cal_status == log.LiveCalibrationData.Status.recalibrating
     np.testing.assert_allclose(c.rpy, [0.0, 0.0, MAX_ALLOWED_YAW_SPREAD*1.1], atol=1e-2)
+
+  def test_calibration_auto_reset_preserves_height_and_wide_euler(self):
+    c = Calibrator(param_put=False)
+    custom_wide = [0.01, -0.02, 0.03]
+    custom_height = 1.48
+    spd = MIN_SPEED_FILTER + 1
+
+    def feed(rpy_calib, cycles):
+      for _ in range(cycles):
+        c.handle_v_ego(spd)
+        c.handle_cam_odom([spd, np.sin(rpy_calib[2]) * spd, -np.sin(rpy_calib[1]) * spd],
+                          [0.0, 0.0, 0.0], custom_wide, [1e-3, 1e-3, 1e-3],
+                          [0.0, 0.0, custom_height], [1e-3, 1e-3, 1e-3])
+
+    feed([0.0, 0.0, 0.0], BLOCK_SIZE * INPUTS_NEEDED)
+    feed([0.0, MAX_ALLOWED_PITCH_SPREAD * 1.1, 0.0], BLOCK_SIZE + 10)
+    assert c.cal_status == log.LiveCalibrationData.Status.recalibrating
+    np.testing.assert_allclose(c.height, [custom_height], atol=1e-3)
+    np.testing.assert_allclose(c.wide_from_device_euler, custom_wide, atol=1e-3)

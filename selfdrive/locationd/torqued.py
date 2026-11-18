@@ -251,14 +251,15 @@ def main(demo=False):
   sm = messaging.SubMaster(['carControl', 'carOutput', 'carState', 'liveCalibration', 'livePose', 'liveDelay'], poll='livePose')
 
   params = Params()
-  estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams))
+  CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
+  estimator = TorqueEstimator(CP)
 
   sm = sm.extend(['starpilotPlan'])
 
   starpilot_toggles = get_starpilot_toggles()
 
   if not starpilot_toggles.liveValid:
-    estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams), decimated=True)
+    estimator = TorqueEstimator(CP, decimated=True)
 
   estimator.starpilot_toggles = starpilot_toggles
 
@@ -274,8 +275,8 @@ def main(demo=False):
     if sm.frame % 5 == 0:
       pm.send('liveTorqueParameters', estimator.get_msg(valid=sm.all_checks(), with_points=DEBUG))
 
-    # Cache points every 60 seconds while onroad
-    if sm.frame % 240 == 0:
+    # Cache points every 60 seconds while onroad (torque-tuned cars only)
+    if CP.lateralTuning.which() == 'torque' and sm.frame > 0 and sm.frame % 1200 == 0:
       msg = estimator.get_msg(valid=sm.all_checks(), with_points=True)
       params.put_nonblocking("LiveTorqueParameters", msg.to_bytes())
 

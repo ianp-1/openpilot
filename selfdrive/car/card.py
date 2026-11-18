@@ -35,6 +35,7 @@ from openpilot.starpilot.common.favorite_slots import (
 )
 from openpilot.starpilot.common.starpilot_variables import always_on_lateral_available, get_starpilot_toggles, update_starpilot_toggles
 from openpilot.starpilot.common.lateral_only_experimental import experimental_mode_available
+from openpilot.starpilot.common.per_car_calibration import sync_per_car_calibration
 from openpilot.starpilot.controls.starpilot_card import StarPilotCard
 
 REPLAY = "REPLAY" in os.environ
@@ -190,10 +191,12 @@ class Car:
       safety_config.safetyModel = structs.CarParams.SafetyModel.noOutput
       self.CP.safetyConfigs = [safety_config]
 
-    # Write previous route's CarParams
-    prev_cp = self.params.get("CarParamsPersistent")
+    # Write previous route's CarParams (and swap per-car calibration bank on multi-car setups)
+    prev_cp = sync_per_car_calibration(self.params, self.params.get("CarParamsPersistent"), self.CP)
     if prev_cp is not None:
       self.params.put("CarParamsPrevRoute", prev_cp)
+    else:
+      self.params.remove("CarParamsPrevRoute")
 
     # Write CarParams for controls and radard
     cp_bytes = self.CP.to_bytes()

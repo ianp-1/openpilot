@@ -798,9 +798,11 @@ class StarPilotVariables:
       self.params.put_bool("EVTuning", ev_vehicle and not self.params.get_bool("TruckTuning"))
 
     if getattr(CP, "brand", "mock") not in ("", "mock"):
-      target_cam_offset = 0.11 if str(getattr(CP, "carFingerprint", "")).startswith("VOLKSWAGEN_ID4") else 0.0
-      if not math.isclose(self.params.get_float("CameraOffset"), target_cam_offset, abs_tol=1e-4):
-        self.params.put_float("CameraOffset", target_cam_offset)
+      is_id4 = str(getattr(CP, "carFingerprint", "")).startswith("VOLKSWAGEN_ID4")
+      raw_cam_offset = self.params_raw.get("CameraOffset")
+      cur_cam_offset = self.params.get_float("CameraOffset")
+      if raw_cam_offset in (None, b"") or (is_id4 and math.isclose(cur_cam_offset, 0.11, abs_tol=1e-4)):
+        self.params.put_float("CameraOffset", 0.10 if is_id4 else 0.0)
 
     if self.params_raw.get("TruckTuning") in (None, b""):
       self.params.put_bool("TruckTuning", False)

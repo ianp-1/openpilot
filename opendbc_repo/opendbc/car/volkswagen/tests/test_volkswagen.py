@@ -76,6 +76,7 @@ class TestVolkswagenPlatformConfigs:
       cp = self._get_meb_params(car)
       assert abs(cp.steerActuatorDelay - 0.2) < 1e-6
       assert abs(cp.lateralSmoothSeconds - 0.22) < 1e-6
+    assert abs(self._get_meb_params(CAR.VOLKSWAGEN_ID4_MK1).steerRatio - 14.0) < 1e-6
 
     golf_cp = CarInterface.get_non_essential_params(CAR.VOLKSWAGEN_GOLF_MK7)
     assert abs(golf_cp.steerActuatorDelay - 0.1) < 1e-6
@@ -170,22 +171,68 @@ class TestVolkswagenPlatformConfigs:
     low_speed = self._run_meb_hca03_curvatures(
       3.0, [0.010] * 100, curvature_meas=0.008, current_curvature=0.012,
     )
+    mid_15mph = self._run_meb_hca03_curvatures(
+      6.7, [0.010] * 100, curvature_meas=0.008, current_curvature=0.012,
+    )
     high_speed = self._run_meb_hca03_curvatures(
       20.0, [0.010] * 120, curvature_meas=0.008, current_curvature=0.012,
     )
     assert abs(low_speed[-1] - 0.010) < 2e-5
+    assert abs(mid_15mph[-1] - 0.010) < 2e-5
     assert abs(high_speed[-1] - 0.006) < 2e-5
 
     # Alternating ~2 Hz curvature wave (0.26s half-period at 50 Hz = 13 steps per half-cycle)
     osc = ([0.0015] * 13 + [-0.0015] * 13) * 6
     low_osc = self._run_meb_hca03_curvatures(3.0, osc)
-    mid_osc = self._run_meb_hca03_curvatures(12.0, osc)
-    override_osc = self._run_meb_hca03_curvatures(3.0, osc, steering_pressed=True)
+    osc_15mph = self._run_meb_hca03_curvatures(6.7, osc)
+    mid_osc = self._run_meb_hca03_curvatures(15.0, osc)
+    override_osc = self._run_meb_hca03_curvatures(6.7, osc, steering_pressed=True)
     low_ptp = max(low_osc[-26:]) - min(low_osc[-26:])
+    ptp_15mph = max(osc_15mph[-26:]) - min(osc_15mph[-26:])
     mid_ptp = max(mid_osc[-26:]) - min(mid_osc[-26:])
     override_ptp = max(override_osc[-26:]) - min(override_osc[-26:])
     assert low_ptp < mid_ptp * 0.75
+    assert abs(ptp_15mph - low_ptp) < 2e-5
     assert abs(override_ptp - mid_ptp) < 2e-4
+
+  def test_meb_bumpless_mid_turn_reengage(self):
+    cp = self._get_meb_params(CAR.VOLKSWAGEN_ID4_MK1, gateway=True, alpha_long=False)
+    cc = CarController(DBC[cp.carFingerprint], cp)
+    parser = CANParser(DBC[cp.carFingerprint][Bus.pt], [("HCA_03", 0)], cc.CAN.pt)
+
+    cs = SimpleNamespace(
+      out=SimpleNamespace(
+        cruiseState=SimpleNamespace(available=True),
+        vEgo=15.0,
+        vEgoRaw=15.0,
+        steeringTorque=0.0,
+        steeringPressed=False,
+      ),
+      curvature_meas=0.008,
+      ldw_stock_values={},
+      gra_stock_values={"COUNTER": 0},
+    )
+
+    def _step_once(lat_active: bool, target_curv: float, current_curv: float, step_idx: int) -> float:
+      msg = CarControl.new_message(enabled=lat_active, latActive=lat_active, currentCurvature=current_curv)
+      msg.actuators.curvature = target_curv
+      reader = msg.as_reader()
+      out = 0.0
+      for sub in range(cc.CCP.STEER_STEP):
+        t_ns = (step_idx * cc.CCP.STEER_STEP + sub) * 10_000_000
+        _, sends = cc.update(reader, cs, t_ns, None)
+        hca_msgs = [m for m in sends if m[0] == 0x303]
+        if hca_msgs:
+          parser.update([(t_ns, hca_msgs)])
+          mag = parser.vl["HCA_03"]["Curvature"]
+          sign = 1.0 if parser.vl["HCA_03"]["Curvature_VZ"] else -1.0
+          out = mag * sign
+      return out
+
+    for i in range(5):
+      _step_once(False, 0.0, 0.011, i)
+    first_active_curv = _step_once(True, 0.011, 0.011, 5)
+    assert abs(first_active_curv - 0.008) < 2e-5
 
   def test_spare_part_fw_pattern(self, subtests):
     # Relied on for determining if a FW is likely VW
