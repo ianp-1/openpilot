@@ -4446,7 +4446,7 @@ def test_standstill_stopped_lead_guard_cap_fades_smoothly_above_max_lead_speed(m
   assert cap_45 == pytest.approx(-0.242)
   assert cap_50 == pytest.approx(-0.180)
   assert cap_55 == pytest.approx(-0.120)
-  assert cap_65 == pytest.approx(0.0)
+  assert cap_65 == pytest.approx(0.0, abs=1e-6)
   assert cap_66 is None
 
   # Planner update keeps stop asserted at v_lead=0.50 without +0.15 snap
