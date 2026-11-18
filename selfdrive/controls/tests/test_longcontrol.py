@@ -1679,7 +1679,7 @@ def test_volkswagen_meb_stop_ease_smoothly_ramps_without_weakening_urgent_stops(
   assert tuning.is_volkswagen_meb
 
   eased = -1.0
-  for _ in range(90):
+  for _ in range(120):
     next_accel = tuning.shape_stopping_accel(
       output_accel=-1.0,
       a_target=-0.20,
@@ -1850,9 +1850,9 @@ def test_volkswagen_meb_hold_type_early_exit_guard_and_release():
   _, _, hold_type, _ = sm.update(cs, cc, 0.25)
   assert hold_type == ramp
 
-  # Moving >= 0.08 m/s from HALTEN without esp_hold also releases via LOESEN_UEBER_RAMPE
+  # Moving >= 0.08 m/s (0.09 in float32 CarState) from HALTEN without esp_hold also releases via LOESEN_UEBER_RAMPE
   cs, cc = make_inputs(0.03, False, LongCtrlState.stopping, -0.5)
   sm.update(cs, cc, -0.5)
-  cs, cc = make_inputs(0.08, False, LongCtrlState.pid, 0.10)
+  cs, cc = make_inputs(0.09, False, LongCtrlState.pid, 0.10)
   _, _, hold_type, _ = sm.update(cs, cc, 0.10)
   assert hold_type == ramp

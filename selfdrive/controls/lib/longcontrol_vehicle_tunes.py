@@ -191,8 +191,8 @@ class LongControlVehicleTuning:
       meb_stop_cap = float(interp(v_ego, VOLKSWAGEN_MEB_FINAL_STOP_CAP_BP, VOLKSWAGEN_MEB_FINAL_STOP_CAP_V))
       if a_target > output_accel:
         desired = min(float(a_target), meb_stop_cap)
-        prior = float(output_accel) if self.meb_stopping_accel is None else self.meb_stopping_accel
-        if desired > prior:
+        if desired >= float(output_accel):
+          prior = float(output_accel) if self.meb_stopping_accel is None else self.meb_stopping_accel
           shaped = min(desired, prior + VOLKSWAGEN_MEB_FINAL_STOP_RELEASE_RATE * DT_CTRL)
         else:
           shaped = float(output_accel)
