@@ -1,3 +1,5 @@
+import numpy as np
+
 from opendbc.car import Bus, structs
 from opendbc.can import CANDefine
 from opendbc.car.common.conversions import Conversions as CV
@@ -86,6 +88,8 @@ ACC_HUD_DISABLED = 0
 
 class MebLongStateMachine:
   HOLD_RELEASE_SPEED = 5 * CV.KPH_TO_MS
+  HOLD_EARLY_EXIT_MAX_SPEED = 0.08
+  HOLD_EARLY_EXIT_MAX_ACCEL = 0.25
 
   def __init__(self, CP, CCP):
     self.CCP = CCP
@@ -139,6 +143,12 @@ class MebLongStateMachine:
         acc_hold_type = self.acc_hold_type_vals['HALTEN']  # stopping/stopped, allowed at any time
       elif starting:
         acc_hold_type = self.acc_hold_type_vals['ANFAHREN']  # resume after reaching full stop
+      elif (self.prev_acc_hold_type == self.acc_hold_type_vals['HALTEN'] and
+            not CS.esp_hold_confirmation and
+            CS.out.vEgo < self.HOLD_EARLY_EXIT_MAX_SPEED and
+            CC.actuators.accel < self.HOLD_EARLY_EXIT_MAX_ACCEL):
+        # Hold HALTEN across borderline stopping -> pid before ESC_50.Standstill arrives
+        acc_hold_type = self.acc_hold_type_vals['HALTEN']
       else:
         # After aborting a stop or finishing starting, we need to send RAMP until we hit 5 kph or go long inactive,
         # only if we didn't just re-engage
@@ -185,16 +195,17 @@ def create_acc_accel_control(packer, bus, CCP, acc_type, acc_enabled, accel, acc
   # ACC_Anhalteweg: when stopping: MEB: values <> 0 the car can execute a hard brake probably if target is too close, MQBEvo: value 0 results in hard brake
   terminal_rollout = 0
 
+  active_accel = accel != CCP.ACCEL_INACTIVE
   values = {
     "ACC_Typ":                    acc_type,
     "ACC_Status_ACC":             acc_status,
     "ACC_StartStopp_Info":        acc_enabled,
     "ACC_Sollbeschleunigung_02":  accel,
-    "ACC_zul_Regelabw_unten":     0,
+    "ACC_zul_Regelabw_unten":     0.12 if active_accel else 0,
     "ACC_zul_Regelabw_oben":      0,
-    "ACC_neg_Sollbeschl_Grad_02": CCP.JERK_LIMIT if accel != CCP.ACCEL_INACTIVE else 0,
-    "ACC_pos_Sollbeschl_Grad_02": CCP.JERK_LIMIT if accel != CCP.ACCEL_INACTIVE else 0,
-    "ACC_Anfahren":               0,  # always zero, stock uses ACC_Anforderung_HMS
+    "ACC_neg_Sollbeschl_Grad_02": float(np.interp(accel, [-2.0, -0.8], [CCP.JERK_LIMIT, 1.5])) if active_accel else 0,
+    "ACC_pos_Sollbeschl_Grad_02": (2.4 if acc_hold_type == 4 else 1.6) if active_accel else 0,
+    "ACC_Anfahren":               1 if acc_hold_type == 4 else 0,
     "ACC_Anhalten":               1 if braking_to_stop else 0,
     "ACC_Anhalteweg":             terminal_rollout if braking_to_stop else 20.46,
     "ACC_Anforderung_HMS":        acc_hold_type,
