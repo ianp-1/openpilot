@@ -66,6 +66,16 @@ def test_rivian_control_smoothing_remains_speed_scheduled(v_ego, expected):
   assert get_control_lateral_smooth_seconds("rivian", v_ego, 0.4) == pytest.approx(expected)
 
 
+@pytest.mark.parametrize(("v_ego", "vehicle_smooth", "expected"), [
+  (2.5, 0.22, 0.22),
+  (6.25, 0.22, 0.16),
+  (20.0, 0.22, 0.10),
+  (2.5, 0.0, 0.10),
+])
+def test_volkswagen_meb_control_smoothing_uses_low_speed_schedule(v_ego, vehicle_smooth, expected):
+  assert get_control_lateral_smooth_seconds("volkswagen", v_ego, vehicle_smooth) == pytest.approx(expected)
+
+
 @pytest.mark.parametrize("curvature", [0.0155, -0.0155])
 def test_twitch_against_a_straight_plan_is_clamped_to_the_floor(curvature):
   guarded = limit_curvature_to_plan(STRAIGHT_PLAN, curvature, 1.2)

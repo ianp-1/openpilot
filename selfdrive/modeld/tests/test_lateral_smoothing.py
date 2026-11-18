@@ -1,7 +1,10 @@
 from types import SimpleNamespace
 
 from cereal import car, log
+from opendbc.car.volkswagen.values import VolkswagenFlags
 import pytest
+
+from openpilot.starpilot.common.lateral_delay import VW_MEB_FLAG, get_effective_lateral_delay
 
 from openpilot.selfdrive.modeld.modeld import (
   get_car_lateral_smooth_seconds,
@@ -89,3 +92,29 @@ def test_sync_inactive_lateral_prev_action_guards_stale_or_nonfinite(car_control
   assert synced is prev_action
   assert synced.desiredCurvature == pytest.approx(0.015)
   assert synced.desiredAcceleration == pytest.approx(0.4)
+
+
+@pytest.mark.parametrize(("v_ego", "vehicle_smooth", "expected"), [
+  (2.0, 0.22, 0.22),
+  (3.5, 0.22, 0.22),
+  (6.25, 0.22, 0.16),
+  (9.0, 0.22, 0.10),
+  (30.0, 0.22, 0.10),
+  (3.5, 0.0, 0.10),
+])
+def test_volkswagen_meb_lateral_smoothing_tapers_above_low_speed(v_ego, vehicle_smooth, expected):
+  assert get_car_lateral_smooth_seconds("volkswagen", v_ego, 0.10, vehicle_smooth) == pytest.approx(expected)
+
+
+def test_effective_lateral_delay_schedules_vw_meb_low_speed_only():
+  assert int(VolkswagenFlags.MEB) == VW_MEB_FLAG
+  meb_cp = SimpleNamespace(brand="volkswagen", flags=int(VolkswagenFlags.MEB))
+  mqb_cp = SimpleNamespace(brand="volkswagen", flags=0)
+  honda_cp = SimpleNamespace(brand="honda", flags=0)
+
+  assert get_effective_lateral_delay(meb_cp, 3.0, 0.40) == pytest.approx(0.22)
+  assert get_effective_lateral_delay(meb_cp, 9.5, 0.40) == pytest.approx(0.31)
+  assert get_effective_lateral_delay(meb_cp, 20.0, 0.40) == pytest.approx(0.40)
+  assert get_effective_lateral_delay(meb_cp, 3.0, 0.40, use_custom_delay=True) == pytest.approx(0.40)
+  assert get_effective_lateral_delay(mqb_cp, 3.0, 0.30) == pytest.approx(0.30)
+  assert get_effective_lateral_delay(honda_cp, 3.0, 0.30) == pytest.approx(0.30)

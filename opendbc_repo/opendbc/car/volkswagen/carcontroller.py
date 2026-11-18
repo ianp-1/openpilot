@@ -10,6 +10,11 @@ from opendbc.car.volkswagen.values import CanBus, CarControllerParams, Volkswage
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
+MEB_LOW_SPEED_SMOOTH_BP = [4.5, 9.0]          # m/s (~10-20 mph)
+MEB_LOW_SPEED_SMOOTH_TAU = [0.08, 0.0]        # s; 50 Hz curvature smoothing at low speed
+MEB_CURVATURE_OFFSET_TAU = 0.25               # s; LPF on (CS.curvature_meas - CC.currentCurvature)
+MEB_CURVATURE_OFFSET_SPEED_BP = [8.0, 12.0]   # m/s (~18-27 mph, straddling 10 m/s PID cut-in)
+
 
 class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
@@ -31,6 +36,8 @@ class CarController(CarControllerBase):
 
     self.apply_torque_last = 0
     self.apply_curvature_last = 0.
+    self.meb_curvature_filtered = 0.
+    self.meb_curvature_offset_filtered = 0.
     self.steering_power_last = 0
     self.accel_last = 0.
     self.lead_distance_bars_last = None
@@ -39,6 +46,13 @@ class CarController(CarControllerBase):
     self.eps_timer_soft_disable_alert = False
     self.hca_frame_timer_running = 0
     self.hca_frame_same_torque = 0
+
+  @staticmethod
+  def _exp_smooth(target: float, prev: float, tau: float, dt: float) -> float:
+    if tau <= 1e-6:
+      return float(target)
+    alpha = 1.0 - float(np.exp(-dt / tau))
+    return float(alpha * target + (1.0 - alpha) * prev)
 
   def update(self, CC, CS, now_nanos, starpilot_toggles):
     actuators = CC.actuators
@@ -52,7 +66,16 @@ class CarController(CarControllerBase):
       if self.CP.flags & VolkswagenFlags.MEB:
         if CC.latActive and CS.out.cruiseState.available:
           hca_enabled = True
-          apply_curvature = actuators.curvature + (CS.curvature_meas - CC.currentCurvature)
+          steer_dt = self.CCP.STEER_STEP * DT_CTRL
+          raw_offset = float(CS.curvature_meas - CC.currentCurvature)
+          self.meb_curvature_offset_filtered = self._exp_smooth(raw_offset, self.meb_curvature_offset_filtered,
+                                                                MEB_CURVATURE_OFFSET_TAU, steer_dt)
+          offset_weight = float(np.interp(CS.out.vEgo, MEB_CURVATURE_OFFSET_SPEED_BP, [0.0, 1.0]))
+          smooth_tau = 0.0 if CS.out.steeringPressed else float(np.interp(CS.out.vEgo, MEB_LOW_SPEED_SMOOTH_BP,
+                                                                           MEB_LOW_SPEED_SMOOTH_TAU))
+          self.meb_curvature_filtered = self._exp_smooth(float(actuators.curvature), self.meb_curvature_filtered,
+                                                         smooth_tau, steer_dt)
+          apply_curvature = self.meb_curvature_filtered + offset_weight * self.meb_curvature_offset_filtered
           apply_curvature = self.CCP.CURVATURE_LIMITS.apply_limits(apply_curvature, self.apply_curvature_last, CS.out.vEgoRaw,
                                                                    CS.curvature_meas, CC.latActive, self.CCP.STEER_STEP)
 
@@ -66,10 +89,14 @@ class CarController(CarControllerBase):
           # Wind steering authority down instead of abruptly faulting the EPS at disengagement.
           hca_enabled = True
           apply_curvature = float(np.clip(CS.curvature_meas, -self.CCP.CURVATURE_MAX, self.CCP.CURVATURE_MAX))
+          self.meb_curvature_filtered = apply_curvature
+          self.meb_curvature_offset_filtered = 0.
           steering_power = max(self.steering_power_last - self.CCP.STEERING_POWER_STEP, 0)
         else:
           hca_enabled = False
           apply_curvature = 0.
+          self.meb_curvature_filtered = float(np.clip(CS.curvature_meas, -self.CCP.CURVATURE_MAX, self.CCP.CURVATURE_MAX))
+          self.meb_curvature_offset_filtered = 0.
           steering_power = 0
 
         can_sends.append(mebcan.create_steering_control(self.packer_pt, self.CAN.pt, apply_curvature, hca_enabled, steering_power))

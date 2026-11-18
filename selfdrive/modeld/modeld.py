@@ -36,6 +36,7 @@ from opendbc.car.car_helpers import get_demo_car_params
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan_tomb_raider, smooth_value
 from openpilot.selfdrive.controls.lib.latcontrol_honda_eps import lateral_delay_schedule, scheduled_lateral_delay
+from openpilot.starpilot.common.lateral_delay import get_effective_lateral_delay
 from openpilot.selfdrive.modeld.camera_offset import CameraOffset, DEFAULT_CAMERA_HEIGHT
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.lateral_source import delay_input, lateral_source, takes_action_t
@@ -123,6 +124,7 @@ EXTERNAL_GPU_EGMP_READY_MV = 12500
 EXTERNAL_GPU_POWER_STABLE_SECONDS = 3.0
 EXTERNAL_GPU_POWER_LOG_INTERVAL_SECONDS = 10.0
 LAT_SMOOTH_BP = [2.0, 8.0]
+VW_MEB_LAT_SMOOTH_BP = [3.5, 9.0]
 MAX_ABS_EXTERNAL_MODEL_OUTPUT = 1e6
 
 
@@ -227,9 +229,12 @@ def get_lateral_smooth_seconds(v_ego: float, maximum: float = 0.0) -> float:
   return float(np.interp(v_ego, LAT_SMOOTH_BP, [maximum, 0.0]))
 
 
-def get_car_lateral_smooth_seconds(brand: str, v_ego: float, maximum: float) -> float:
+def get_car_lateral_smooth_seconds(brand: str, v_ego: float, maximum: float, vehicle_smooth_seconds: float = 0.0) -> float:
   if brand in ("rivian", "subaru"):
     return get_lateral_smooth_seconds(v_ego, maximum)
+  if brand == "volkswagen" and vehicle_smooth_seconds > 0.0:
+    low_speed_smooth = max(float(maximum), float(vehicle_smooth_seconds))
+    return float(np.interp(v_ego, VW_MEB_LAT_SMOOTH_BP, [low_speed_smooth, float(maximum)]))
   return maximum
 
 
@@ -1477,10 +1482,17 @@ def main(demo=False):
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["roadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
-    lat_smooth_default = CP.lateralSmoothSeconds if (CP.brand == "rivian" or CP.lateralSmoothSeconds > 0.0) else LAT_SMOOTH_SECONDS
+    lat_smooth_default = CP.lateralSmoothSeconds if (CP.brand == "rivian" or (CP.brand != "volkswagen" and CP.lateralSmoothSeconds > 0.0)) else LAT_SMOOTH_SECONDS
     lat_smooth_maximum = _model_smooth_seconds(params, "LatSmoothSeconds", lat_smooth_default)
-    lat_smooth_seconds = get_car_lateral_smooth_seconds(CP.brand, v_ego, lat_smooth_maximum)
-    lateral_delay = scheduled_lateral_delay(lat_delay_schedule, v_ego) if lat_delay_schedule else sm["liveDelay"].lateralDelay
+    lat_smooth_seconds = get_car_lateral_smooth_seconds(CP.brand, v_ego, lat_smooth_maximum, CP.lateralSmoothSeconds)
+    lateral_delay = (
+      scheduled_lateral_delay(lat_delay_schedule, v_ego)
+      if lat_delay_schedule
+      else get_effective_lateral_delay(
+        CP, v_ego, sm["liveDelay"].lateralDelay,
+        bool(getattr(starpilot_toggles, "use_custom_steerActuatorDelay", False)),
+      )
+    )
     lat_delay = lateral_delay + lat_smooth_seconds
     lateral_control_params = np.array([v_ego, lat_delay], dtype=np.float32)
     if sm.frame % 60 == 0:

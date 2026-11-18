@@ -41,6 +41,7 @@ from openpilot.selfdrive.car.cruise_state import should_cancel_stock_cruise
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS, get_car_lateral_smooth_seconds
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
+from openpilot.starpilot.common.lateral_delay import get_effective_lateral_delay
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
 from openpilot.starpilot.controls.lib.neural_network_feedforward import LatControlNNFF
 
@@ -300,6 +301,8 @@ def update_twitch_guard(remaining: float, v_ego: float, standstill: bool) -> flo
 def get_control_lateral_smooth_seconds(brand: str, v_ego: float, vehicle_smooth_seconds: float) -> float:
   if brand == "rivian" or (brand == "subaru" and vehicle_smooth_seconds > 0.0):
     return get_car_lateral_smooth_seconds(brand, v_ego, vehicle_smooth_seconds)
+  if brand == "volkswagen" and vehicle_smooth_seconds > 0.0:
+    return get_car_lateral_smooth_seconds(brand, v_ego, LAT_SMOOTH_SECONDS, vehicle_smooth_seconds)
   return LAT_SMOOTH_SECONDS
 
 
@@ -455,7 +458,7 @@ class Controls:
     self.lat_delay_schedule = lateral_delay_schedule(self.CP) if eps_fw else None
     self.rack_map = get_rack_map(self.CP, self.LaC.calibration) if eps_fw else None
     # see TURN_SHAPING_TAU
-    self.turn_shaping = isinstance(self.LaC, LatControlHondaEps)
+    self.turn_shaping = isinstance(self.LaC, (LatControlHondaEps, LatControlCurvature))
 
     self.sm = self.sm.extend(['liveDelay', 'starpilotCarState', 'starpilotPlan'])
 
@@ -934,8 +937,14 @@ class Controls:
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll,
                                                                jerk_factor)
     lat_smooth_seconds = get_control_lateral_smooth_seconds(self.CP.brand, CS.vEgo, self.CP.lateralSmoothSeconds)
-    lateral_delay = scheduled_lateral_delay(self.lat_delay_schedule, CS.vEgo) if self.lat_delay_schedule else \
-      self.sm["liveDelay"].lateralDelay
+    lateral_delay = (
+      scheduled_lateral_delay(self.lat_delay_schedule, CS.vEgo)
+      if self.lat_delay_schedule
+      else get_effective_lateral_delay(
+        self.CP, CS.vEgo, self.sm["liveDelay"].lateralDelay,
+        bool(getattr(self.starpilot_toggles, "use_custom_steerActuatorDelay", False)),
+      )
+    )
     lat_delay = lateral_delay + lat_smooth_seconds
 
     actuators.curvature = self.desired_curvature

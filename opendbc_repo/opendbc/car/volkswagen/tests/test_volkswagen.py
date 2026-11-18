@@ -75,9 +75,11 @@ class TestVolkswagenPlatformConfigs:
     for car in self.MEB_CARS:
       cp = self._get_meb_params(car)
       assert abs(cp.steerActuatorDelay - 0.2) < 1e-6
+      assert abs(cp.lateralSmoothSeconds - 0.22) < 1e-6
 
     golf_cp = CarInterface.get_non_essential_params(CAR.VOLKSWAGEN_GOLF_MK7)
     assert abs(golf_cp.steerActuatorDelay - 0.1) < 1e-6
+    assert abs(golf_cp.lateralSmoothSeconds - 0.0) < 1e-6
 
   @staticmethod
   def _run_meb_hca03_override_power(steering_torque_sequence):
@@ -126,6 +128,64 @@ class TestVolkswagenPlatformConfigs:
     assert right_powers == left_powers
     assert abs(left_powers[-1] - 4.0) < 1e-6
     assert abs(right_powers[-1] - 4.0) < 1e-6
+
+  @staticmethod
+  def _run_meb_hca03_curvatures(v_ego, target_curvatures, *, curvature_meas=0.0, current_curvature=0.0, steering_pressed=False):
+    cp = TestVolkswagenPlatformConfigs._get_meb_params(CAR.VOLKSWAGEN_ID4_MK1, gateway=True, alpha_long=False)
+    cc = CarController(DBC[cp.carFingerprint], cp)
+    parser = CANParser(DBC[cp.carFingerprint][Bus.pt], [("HCA_03", 0)], cc.CAN.pt)
+
+    curvatures = []
+    for step, target_curvature in enumerate(target_curvatures):
+      CC = CarControl.new_message()
+      CC.enabled = True
+      CC.latActive = True
+      CC.currentCurvature = current_curvature
+      CC.actuators.curvature = target_curvature
+      cc_reader = CC.as_reader()
+      CS = SimpleNamespace(
+        out=SimpleNamespace(
+          cruiseState=SimpleNamespace(available=True),
+          vEgo=v_ego,
+          vEgoRaw=v_ego,
+          steeringTorque=0.0,
+          steeringPressed=steering_pressed,
+        ),
+        curvature_meas=curvature_meas,
+        ldw_stock_values={},
+        gra_stock_values={"COUNTER": 0},
+      )
+      for sub in range(cc.CCP.STEER_STEP):
+        t_ns = (step * cc.CCP.STEER_STEP + sub) * 10_000_000
+        _, can_sends = cc.update(cc_reader, CS, t_ns, None)
+        hca_msgs = [msg for msg in can_sends if msg[0] == 0x303]
+        if hca_msgs:
+          parser.update([(t_ns, hca_msgs)])
+          mag = parser.vl["HCA_03"]["Curvature"]
+          sign = 1.0 if parser.vl["HCA_03"]["Curvature_VZ"] else -1.0
+          curvatures.append(mag * sign)
+    return curvatures
+
+  def test_meb_low_speed_curvature_offset_suppression_and_smoothing(self):
+    low_speed = self._run_meb_hca03_curvatures(
+      3.0, [0.010] * 100, curvature_meas=0.008, current_curvature=0.012,
+    )
+    high_speed = self._run_meb_hca03_curvatures(
+      20.0, [0.010] * 120, curvature_meas=0.008, current_curvature=0.012,
+    )
+    assert abs(low_speed[-1] - 0.010) < 2e-5
+    assert abs(high_speed[-1] - 0.006) < 2e-5
+
+    # Alternating ~2 Hz curvature wave (0.26s half-period at 50 Hz = 13 steps per half-cycle)
+    osc = ([0.0015] * 13 + [-0.0015] * 13) * 6
+    low_osc = self._run_meb_hca03_curvatures(3.0, osc)
+    mid_osc = self._run_meb_hca03_curvatures(12.0, osc)
+    override_osc = self._run_meb_hca03_curvatures(3.0, osc, steering_pressed=True)
+    low_ptp = max(low_osc[-26:]) - min(low_osc[-26:])
+    mid_ptp = max(mid_osc[-26:]) - min(mid_osc[-26:])
+    override_ptp = max(override_osc[-26:]) - min(override_osc[-26:])
+    assert low_ptp < mid_ptp * 0.75
+    assert abs(override_ptp - mid_ptp) < 2e-4
 
   def test_spare_part_fw_pattern(self, subtests):
     # Relied on for determining if a FW is likely VW
