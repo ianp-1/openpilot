@@ -141,6 +141,7 @@ LEAD_DEPART_ACCEL_HOLD_MAX_EGO_SPEED = 2.0
 # existing 9.2 s vision-approach behaviour, while clearing 000001eb 5:48 (15.2 s) and its
 # rubber-banding neighbour (17.6 s) with margin.
 CLOSE_LEAD_BRAKE_CAP_MAX_TTC = 10.0
+CLOSE_LEAD_BRAKE_CAP_TTC_FULL = 7.0
 
 # The cap used to be a step: nothing below required_decel 0.2, full demand at and above it. That
 # discontinuity is the accel->decel->accel cycling reported as rubber banding -- 000001eb at 5:48
@@ -841,8 +842,11 @@ class LongitudinalPlanner:
     # deliberately not something this function pretends to solve.
     required_decel = (closing_speed ** 2) / (2.0 * available_gap) + 0.7 * lead_brake
 
-    ramp = float(np.clip((required_decel - CLOSE_LEAD_BRAKE_CAP_RAMP_MIN) /
-                         (CLOSE_LEAD_BRAKE_CAP_RAMP_FULL - CLOSE_LEAD_BRAKE_CAP_RAMP_MIN), 0.0, 1.0))
+    decel_ramp = float(np.clip((required_decel - CLOSE_LEAD_BRAKE_CAP_RAMP_MIN) /
+                               (CLOSE_LEAD_BRAKE_CAP_RAMP_FULL - CLOSE_LEAD_BRAKE_CAP_RAMP_MIN), 0.0, 1.0))
+    ttc_ramp = float(np.clip((CLOSE_LEAD_BRAKE_CAP_MAX_TTC - projected_ttc) /
+                             (CLOSE_LEAD_BRAKE_CAP_MAX_TTC - CLOSE_LEAD_BRAKE_CAP_TTC_FULL), 0.0, 1.0))
+    ramp = decel_ramp * ttc_ramp
     if ramp <= 0.0:
       return None
 
@@ -2750,7 +2754,7 @@ class LongitudinalPlanner:
         )
         if rav4_early_lead_cap is not None:
           rav4_early_lead_caps.append(rav4_early_lead_cap)
-        cap = self.get_close_lead_brake_cap(lead, v_ego, output_accel_min)
+        cap = self.get_close_lead_brake_cap(lead, v_ego, vision_cap_accel_min)
         if cap is not None:
           close_lead_caps.append(cap)
           self.close_lead_brake_cap_value = min(self.close_lead_brake_cap_value, cap)
@@ -3099,7 +3103,12 @@ class LongitudinalPlanner:
       cruise_accel_cap = max(0.0, (v_cruise - v_ego + 0.01) / max(action_t, self.dt))
       output_a_target = min(output_a_target, cruise_accel_cap)
 
-    if vision_brake_cap_active:
+    lead_brake_floor_active = (
+      vision_brake_cap_active or
+      bool(close_lead_caps) or
+      self.mpc.source in ('lead0', 'lead1')
+    )
+    if lead_brake_floor_active:
       output_accel_min = min(output_accel_min, vision_cap_accel_min)
 
     policy_lead = self.lead_two if self.mpc.source == "lead1" else self.lead_one

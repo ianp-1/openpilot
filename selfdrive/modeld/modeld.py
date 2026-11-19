@@ -1503,8 +1503,11 @@ def main(demo=False):
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["liveCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['roadCameraState'].sensor))]
-      model_transform_main = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics, False).astype(np.float32)
-      model_transform_extra = get_warp_matrix(device_from_calib_euler, dc.ecam.intrinsics, True).astype(np.float32)
+      main_intrinsics = dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics
+      extra_wide_camera = use_extra_client or main_wide_camera
+      extra_intrinsics = dc.ecam.intrinsics if extra_wide_camera else dc.fcam.intrinsics
+      model_transform_main = get_warp_matrix(device_from_calib_euler, main_intrinsics, False).astype(np.float32)
+      model_transform_extra = get_warp_matrix(device_from_calib_euler, extra_intrinsics, True).astype(np.float32)
       camera_height = sm["liveCalibration"].height[0] if sm["liveCalibration"].height else DEFAULT_CAMERA_HEIGHT
       model_transform_main, model_transform_extra = camera_offset.update(
         model_transform_main,
@@ -1513,6 +1516,7 @@ def main(demo=False):
         str(sm["roadCameraState"].sensor),
         camera_height,
         main_wide_camera,
+        extra_wide_camera=extra_wide_camera,
       )
       live_calib_seen = True
 

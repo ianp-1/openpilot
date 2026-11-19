@@ -15,6 +15,8 @@ from opendbc.car.ford.interface import CarInterface as FordCarInterface
 from opendbc.car.ford.values import CAR as FORD_CAR
 from opendbc.car.toyota.interface import CarInterface as ToyotaCarInterface
 from opendbc.car.toyota.values import CAR as TOYOTA_CAR
+from opendbc.car.volkswagen.interface import CarInterface as VolkswagenCarInterface
+from opendbc.car.volkswagen.values import CAR as VW_CAR
 import openpilot.selfdrive.controls.lib.longitudinal_planner as longitudinal_planner_module
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
@@ -4511,3 +4513,134 @@ def test_far_follow_output_slew_ramps_upward_exit_and_bypasses_braking():
   )
   assert braking == pytest.approx(-1.20)
   assert not planner.far_follow_output_slew_active
+
+
+@pytest.mark.parametrize("car_interface,candidate", [
+  (VolkswagenCarInterface, VW_CAR.VOLKSWAGEN_ID4_MK1),
+  (CarInterface, CAR.HONDA_CRV_5G),
+])
+@pytest.mark.parametrize("min_accel", [-1.0, -0.5])
+def test_acc_mode_radar_lead_braking_unclipped_below_min_accel(car_interface, candidate, min_accel):
+  v_ego = 20.0
+  CP = car_interface.get_non_essential_params(candidate)
+
+  lead_planner = LongitudinalPlanner(CP, init_v=v_ego)
+  lead_sm = make_sm(
+    v_ego,
+    desired_accel=0.2,
+    min_accel=min_accel,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=18.0, v_lead=14.0, a_lead=-1.5, radar=True, model_prob=0.99),
+  )
+  lead_sm["starpilotPlan"].vCruise = v_ego + 5.0
+  lead_planner.update(lead_sm, make_toggles("v15"))
+
+  assert lead_planner.mode == "acc"
+  assert lead_planner.mpc.source == "lead0"
+  assert lead_planner.output_a_target < min_accel - 1.0
+
+  cruise_planner = LongitudinalPlanner(CP, init_v=v_ego)
+  cruise_sm = make_sm(
+    v_ego,
+    desired_accel=0.2,
+    min_accel=min_accel,
+    experimental_mode=False,
+    tracking_lead=False,
+    lead_one=make_lead(status=False),
+  )
+  cruise_sm["starpilotPlan"].vCruise = v_ego - 10.0
+  cruise_planner.update(cruise_sm, make_toggles("v15"))
+
+  assert cruise_planner.mode == "acc"
+  assert cruise_planner.mpc.source == "cruise"
+  assert cruise_planner.output_a_target >= min_accel - 1e-6
+
+
+@pytest.mark.parametrize("car_interface,candidate", [
+  (VolkswagenCarInterface, VW_CAR.VOLKSWAGEN_ID4_MK1),
+  (CarInterface, CAR.HONDA_CRV_5G),
+])
+@pytest.mark.parametrize("min_accel", [-1.0, -0.5])
+def test_acc_mode_mpc_lead_source_unclipped_while_cruise_remains_clamped(car_interface, candidate, min_accel, monkeypatch):
+  v_ego = 25.0
+  CP = car_interface.get_non_essential_params(candidate)
+  monkeypatch.setattr(longitudinal_planner_module, "get_accel_from_plan", lambda *args, **kwargs: (-1.6, False))
+
+  lead = make_lead(status=True, d_rel=22.0, v_lead=23.0, a_lead=0.0, radar=True, model_prob=0.99)
+  lead_planner = LongitudinalPlanner(CP, init_v=v_ego)
+  assert lead_planner.get_close_lead_brake_cap(lead, v_ego, get_vehicle_min_accel(CP, v_ego)) is None
+
+  lead_sm = make_sm(
+    v_ego,
+    desired_accel=0.0,
+    min_accel=min_accel,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=lead,
+  )
+  lead_sm["starpilotPlan"].vCruise = v_ego + 5.0
+  lead_planner.update(lead_sm, make_toggles("v15"))
+
+  assert lead_planner.mode == "acc"
+  assert lead_planner.mpc.source == "lead0"
+  assert lead_planner.output_a_target <= -1.6
+  assert lead_planner.output_a_target < min_accel
+
+  cruise_planner = LongitudinalPlanner(CP, init_v=v_ego)
+  cruise_sm = make_sm(
+    v_ego,
+    desired_accel=0.0,
+    min_accel=min_accel,
+    experimental_mode=False,
+    tracking_lead=False,
+    lead_one=make_lead(status=False),
+  )
+  cruise_sm["starpilotPlan"].vCruise = v_ego - 10.0
+  cruise_planner.update(cruise_sm, make_toggles("v15"))
+
+  assert cruise_planner.mode == "acc"
+  assert cruise_planner.mpc.source == "cruise"
+  assert cruise_planner.output_a_target == pytest.approx(min_accel)
+
+
+def test_get_close_lead_brake_cap_ttc_ramp():
+  v_ego = 20.0
+  v_lead = 16.0
+  a_lead = -0.8
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+
+  def expected_required_decel(d_rel):
+    reaction_t = max(planner.longitudinal_actuator_delay, planner.dt)
+    closing_speed = max(0.0, v_ego - v_lead)
+    lead_brake = max(0.0, -a_lead)
+    projected_closing = closing_speed + lead_brake * reaction_t
+    target_gap = float(np.clip(2.0 + 0.2 * v_ego, 2.0, 6.0))
+    available_gap = max(d_rel - target_gap - projected_closing * reaction_t, 0.5)
+    return (closing_speed ** 2) / (2.0 * available_gap) + 0.7 * lead_brake
+
+  cap_above_max_ttc = planner.get_close_lead_brake_cap(
+    make_lead(status=True, d_rel=48.7, v_lead=v_lead, a_lead=a_lead, radar=True), v_ego, -3.5,
+  )
+  cap_just_below = planner.get_close_lead_brake_cap(
+    make_lead(status=True, d_rel=47.4, v_lead=v_lead, a_lead=a_lead, radar=True), v_ego, -3.5,
+  )
+  cap_mid_high = planner.get_close_lead_brake_cap(
+    make_lead(status=True, d_rel=46.5, v_lead=v_lead, a_lead=a_lead, radar=True), v_ego, -3.5,
+  )
+  cap_mid = planner.get_close_lead_brake_cap(
+    make_lead(status=True, d_rel=41.6, v_lead=v_lead, a_lead=a_lead, radar=True), v_ego, -3.5,
+  )
+  cap_at_full = planner.get_close_lead_brake_cap(
+    make_lead(status=True, d_rel=35.4, v_lead=v_lead, a_lead=a_lead, radar=True), v_ego, -3.5,
+  )
+  cap_below_full = planner.get_close_lead_brake_cap(
+    make_lead(status=True, d_rel=31.3, v_lead=v_lead, a_lead=a_lead, radar=True), v_ego, -3.5,
+  )
+
+  assert cap_above_max_ttc is None
+  assert cap_just_below is not None and -0.05 < cap_just_below < 0.0
+  assert cap_just_below > cap_mid_high > cap_mid > cap_at_full
+  assert cap_at_full == pytest.approx(-expected_required_decel(35.4))
+  assert cap_below_full == pytest.approx(-expected_required_decel(31.3))

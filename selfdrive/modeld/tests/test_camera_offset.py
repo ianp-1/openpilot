@@ -74,3 +74,74 @@ def test_camera_offset_update_changes_both_transforms():
   assert not np.array_equal(extra_out, extra_transform)
   assert main_out[0, 1] != 0.0
   assert main_out[0, 2] != 0.0
+
+
+def test_camera_offset_update_extra_wide_camera_intrinsics():
+  fcam_intrinsics = np.array([
+    [910.0, 0.0, 582.0],
+    [0.0, 910.0, 437.0],
+    [0.0, 0.0, 1.0],
+  ], dtype=np.float32)
+  ecam_intrinsics = np.array([
+    [567.0, 0.0, 964.0],
+    [0.0, 567.0, 604.0],
+    [0.0, 0.0, 1.0],
+  ], dtype=np.float32)
+  cameras = {
+    ("tici", "ar0231"): SimpleNamespace(
+      fcam=SimpleNamespace(intrinsics=fcam_intrinsics),
+      ecam=SimpleNamespace(intrinsics=ecam_intrinsics),
+    )
+  }
+
+  main_transform = np.eye(3, dtype=np.float32)
+  extra_transform = np.eye(3, dtype=np.float32)
+  height = 1.22
+
+  default_offset = CameraOffset()
+  default_offset.set_target(0.2)
+  main_default, extra_default = default_offset.update(
+    main_transform,
+    extra_transform,
+    "tici",
+    "ar0231",
+    height,
+    False,
+    cameras,
+  )
+
+  explicit_wide_offset = CameraOffset()
+  explicit_wide_offset.set_target(0.2)
+  _, extra_explicit_wide = explicit_wide_offset.update(
+    main_transform,
+    extra_transform,
+    "tici",
+    "ar0231",
+    height,
+    False,
+    device_cameras=cameras,
+    extra_wide_camera=True,
+  )
+
+  single_cam_offset = CameraOffset()
+  single_cam_offset.set_target(0.2)
+  main_single, extra_single = single_cam_offset.update(
+    main_transform,
+    extra_transform,
+    "tici",
+    "ar0231",
+    height,
+    False,
+    cameras,
+    extra_wide_camera=False,
+  )
+
+  expected_fcam = CameraOffset.apply(extra_transform, fcam_intrinsics, height, single_cam_offset.offset)
+  expected_ecam = CameraOffset.apply(extra_transform, ecam_intrinsics, height, default_offset.offset)
+
+  np.testing.assert_array_almost_equal(main_default, expected_fcam)
+  np.testing.assert_array_almost_equal(main_single, expected_fcam)
+  np.testing.assert_array_almost_equal(extra_default, expected_ecam)
+  np.testing.assert_array_almost_equal(extra_explicit_wide, expected_ecam)
+  np.testing.assert_array_almost_equal(extra_single, expected_fcam)
+  assert not np.array_equal(extra_default, extra_single)

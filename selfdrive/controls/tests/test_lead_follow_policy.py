@@ -2,7 +2,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from openpilot.selfdrive.controls.lib.lead_follow_policy import apply
+from openpilot.selfdrive.controls.lib.lead_follow_policy import (
+  FOLLOW_GAP_BUFFER_FADE,
+  FOLLOW_GAP_BUFFER_GAIN,
+  FOLLOW_GAP_BUFFER_MIN,
+  _catchup_cap,
+  apply,
+)
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import desired_follow_distance
 
 
 def lead(*, d_rel=40.0, v_lead=20.0, a_lead=0.0, radar=False, model_prob=0.99, y_rel=0.0):
@@ -128,3 +135,69 @@ def test_follow_policy_keeps_downward_and_unmatched_braking_unclipped():
   unmatched = run(unmatched_lead, v_ego=25.0, previous=-1.202, raw=-0.35)
   assert unmatched.brake_floor is None
   assert unmatched.target == pytest.approx(-0.35)
+
+
+def test_catchup_cap_fades_smoothly_across_gap_buffer():
+  v_ego = 20.0
+  v_lead = 20.0
+  t_follow = 1.45
+  buffer = max(FOLLOW_GAP_BUFFER_MIN, FOLLOW_GAP_BUFFER_GAIN * v_ego)
+  desired_gap = float(desired_follow_distance(v_ego, v_lead, t_follow))
+
+  def cap_at(gap_error):
+    return _catchup_cap(
+      lead(d_rel=desired_gap + gap_error, v_lead=v_lead, radar=False),
+      v_ego,
+      t_follow,
+      source="lead0",
+      tracking=True,
+      post_departure=False,
+    )
+
+  cap_at_buffer = cap_at(buffer)
+  cap_just_above = cap_at(buffer + 0.08)
+  fade_caps = [cap_at(buffer + offset) for offset in (0.0, 0.08, 0.5, 1.5, 2.5, 2.95)]
+
+  assert cap_at_buffer is not None
+  assert cap_just_above is not None
+  assert cap_just_above - cap_at_buffer < 0.05
+  assert all(a < b for a, b in zip(fade_caps, fade_caps[1:]))
+  assert 1.45 < fade_caps[-1] < 1.5
+  assert cap_at(buffer + FOLLOW_GAP_BUFFER_FADE) is None
+  assert cap_at(buffer + FOLLOW_GAP_BUFFER_FADE + 0.5) is None
+
+  res = run(
+    lead(d_rel=desired_gap + buffer + 0.08, v_lead=v_lead, radar=False),
+    v_ego=v_ego,
+    previous=cap_at_buffer,
+    raw=1.4,
+  )
+  assert res.accel_cap == pytest.approx(cap_just_above)
+  assert res.target <= cap_just_above + 1e-6
+
+
+def test_catchup_cap_matched_radar_fades_smoothly_from_matched_release_start():
+  v_ego = 24.0
+  v_lead = 24.0
+  t_follow = 1.45
+  buffer = max(FOLLOW_GAP_BUFFER_MIN, FOLLOW_GAP_BUFFER_GAIN * v_ego)
+  release_start = buffer - 0.75
+  desired_gap = float(desired_follow_distance(v_ego, v_lead, t_follow))
+
+  def cap_at(gap_error):
+    return _catchup_cap(
+      lead(d_rel=desired_gap + gap_error, v_lead=v_lead, radar=True),
+      v_ego,
+      t_follow,
+      source="lead0",
+      tracking=True,
+      post_departure=False,
+    )
+
+  caps = [cap_at(release_start + offset) for offset in (0.0, 0.08, 0.75, 1.75, 2.95)]
+  assert all(c is not None for c in caps)
+  assert caps[1] - caps[0] < 0.05
+  assert all(a < b for a, b in zip(caps, caps[1:]))
+  assert 1.45 < caps[-1] < 1.5
+  assert cap_at(release_start + FOLLOW_GAP_BUFFER_FADE) is None
+  assert cap_at(release_start + FOLLOW_GAP_BUFFER_FADE + 0.5) is None

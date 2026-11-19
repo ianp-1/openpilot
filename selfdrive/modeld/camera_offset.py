@@ -39,13 +39,15 @@ class CameraOffset:
     camera_height: float,
     main_wide_camera: bool,
     device_cameras: dict | None = None,
+    extra_wide_camera: bool = True,
   ) -> tuple[np.ndarray, np.ndarray]:
     self.offset += (self.target_offset - self.offset) * CAMERA_OFFSET_SMOOTHING
 
     dc = (device_cameras or _device_cameras())[(device_type, camera_sensor)]
     main_intrinsics = dc.ecam.intrinsics if main_wide_camera else dc.fcam.intrinsics
+    extra_intrinsics = dc.ecam.intrinsics if extra_wide_camera else dc.fcam.intrinsics
 
     return (
       self.apply(model_transform_main, main_intrinsics, camera_height, self.offset),
-      self.apply(model_transform_extra, dc.ecam.intrinsics, camera_height, self.offset),
+      self.apply(model_transform_extra, extra_intrinsics, camera_height, self.offset),
     )

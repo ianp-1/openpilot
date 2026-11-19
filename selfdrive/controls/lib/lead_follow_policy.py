@@ -21,6 +21,7 @@ FOLLOW_MAX_CLOSING = 3.5
 FOLLOW_MAX_LEAD_BRAKE = 0.35
 FOLLOW_GAP_BUFFER_MIN = 4.0
 FOLLOW_GAP_BUFFER_GAIN = 0.15
+FOLLOW_GAP_BUFFER_FADE = 3.0
 FOLLOW_TRANSITION_MIN_STEP = 0.06
 FOLLOW_TRANSITION_MAX_STEP = 0.18
 FOLLOW_TRANSITION_MIN_TTC = 6.0
@@ -117,12 +118,12 @@ def _catchup_cap(lead, v_ego: float, t_follow: float, *, source: str, tracking: 
 
   gap_error = float(lead.dRel) - float(desired_follow_distance(v_ego, lead.vLead, t_follow))
   buffer = max(FOLLOW_GAP_BUFFER_MIN, FOLLOW_GAP_BUFFER_GAIN * float(v_ego))
-  if gap_error > buffer:
+  matched_radar = radar and tracking and _matched(lead, v_ego, t_follow)
+  release_start = buffer - 0.75 if matched_radar else buffer
+  if gap_error >= release_start + FOLLOW_GAP_BUFFER_FADE:
     return None
 
-  if radar and tracking and _matched(lead, v_ego, t_follow):
-    if gap_error > buffer - 0.75:
-      return None
+  if matched_radar:
     if source == "cruise" and gap_error <= 0.75 and lead_delta < minimum_delta:
       return 0.04
 
@@ -136,6 +137,9 @@ def _catchup_cap(lead, v_ego: float, t_follow: float, *, source: str, tracking: 
   cap += allowance * 0.55
   entry = float(np.clip((v_ego - 8.0) / 4.0, 0.0, 1.0))
   cap = float(np.interp(entry, [0.0, 1.0], [1.5, cap]))
+  if gap_error > release_start:
+    gap_fade = float(np.clip((gap_error - release_start) / FOLLOW_GAP_BUFFER_FADE, 0.0, 1.0))
+    cap = float(np.interp(gap_fade, [0.0, 1.0], [cap, 1.5]))
   return min(1.5, cap)
 
 
