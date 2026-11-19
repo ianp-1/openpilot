@@ -4553,6 +4553,12 @@ def test_acc_mode_radar_lead_braking_unclipped_below_min_accel(car_interface, ca
   cruise_planner.update(cruise_sm, make_toggles("v15"))
 
   assert cruise_planner.mode == "acc"
+  assert cruise_planner.output_a_target >= min_accel - 1e-6
+
+  cruise_planner.mpc.lead_v_filter.x = v_ego + 10.0
+  cruise_planner.update(cruise_sm, make_toggles("v15"))
+
+  assert cruise_planner.mode == "acc"
   assert cruise_planner.mpc.source == "cruise"
   assert cruise_planner.output_a_target >= min_accel - 1e-6
 
@@ -4597,6 +4603,12 @@ def test_acc_mode_mpc_lead_source_unclipped_while_cruise_remains_clamped(car_int
     lead_one=make_lead(status=False),
   )
   cruise_sm["starpilotPlan"].vCruise = v_ego - 10.0
+  cruise_planner.update(cruise_sm, make_toggles("v15"))
+
+  assert cruise_planner.mode == "acc"
+  assert cruise_planner.output_a_target == pytest.approx(min_accel)
+
+  cruise_planner.mpc.lead_v_filter.x = v_ego + 10.0
   cruise_planner.update(cruise_sm, make_toggles("v15"))
 
   assert cruise_planner.mode == "acc"

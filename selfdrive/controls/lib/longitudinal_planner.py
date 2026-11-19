@@ -3103,10 +3103,22 @@ class LongitudinalPlanner:
       cruise_accel_cap = max(0.0, (v_cruise - v_ego + 0.01) / max(action_t, self.dt))
       output_a_target = min(output_a_target, cruise_accel_cap)
 
+    active_mpc_lead = (
+      self.lead_two if self.mpc.source == 'lead1'
+      else self.lead_one if self.mpc.source == 'lead0'
+      else None
+    )
+    radar_lead_brake_floor_active = bool(
+      lead_control_active and
+      active_mpc_lead is not None and
+      active_mpc_lead.status and
+      bool(getattr(active_mpc_lead, 'radar', False))
+    )
+    close_lead_cap_below_comfort = any(cap < comfort_output_accel_min for cap in close_lead_caps)
     lead_brake_floor_active = (
       vision_brake_cap_active or
-      bool(close_lead_caps) or
-      self.mpc.source in ('lead0', 'lead1')
+      radar_lead_brake_floor_active or
+      close_lead_cap_below_comfort
     )
     if lead_brake_floor_active:
       output_accel_min = min(output_accel_min, vision_cap_accel_min)
