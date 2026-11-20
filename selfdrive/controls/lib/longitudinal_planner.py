@@ -640,6 +640,7 @@ class LongitudinalPlanner:
     # The MPC's own solution, kept separately from the arbitrated output_a_target.
     self.last_mpc_a_target = 0.0
     self.output_should_stop = False
+    self.was_reset_state = False
     self.far_follow_brake_slew_rate, self.far_follow_release_slew_rate = get_far_follow_output_slew_rates(CP)
     self.untracked_slow_lead_decel_scale = get_untracked_slow_lead_decel_scale(CP)
     self.tracked_lead_catchup_headway_margins = get_tracked_lead_catchup_headway_margins(CP)
@@ -2486,6 +2487,26 @@ class LongitudinalPlanner:
                          filter_time_factor_floor=steady_follow_filter_floor)
     self.mpc.set_accel_limits(accel_limits_turns[0], accel_limits_turns[1])
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
+    if self.was_reset_state and not reset_state:
+      v0 = float(self.v_desired_filter.x)
+      a0 = float(self.a_desired)
+      t_stop = max(0.0, -v0 / a0) if a0 < -1e-6 else float("inf")
+      prev_a = np.empty_like(self.mpc.prev_a)
+      for i, t_i in enumerate(T_IDXS_MPC):
+        t_f = float(t_i)
+        if t_f <= t_stop:
+          x_i = v0 * t_f + 0.5 * a0 * (t_f ** 2)
+          v_i = max(0.0, v0 + a0 * t_f)
+          a_i = a0
+        else:
+          x_i = max(0.0, v0 * t_stop + 0.5 * a0 * (t_stop ** 2))
+          v_i = 0.0
+          a_i = 0.0
+        prev_a[i] = a_i
+        self.mpc.solver.set(i, 'x', np.array([x_i, v_i, a_i]))
+      for i in range(len(T_IDXS_MPC) - 1):
+        self.mpc.solver.set(i, 'u', np.zeros(1))
+      self.mpc.prev_a = prev_a
     # After deciding the MPC mode via get_mpc_mode(), ensure MPC uses that mode when not mlsim
     dec_mpc_mode = self.get_mpc_mode()
     if not self.mlsim:
@@ -3358,9 +3379,11 @@ class LongitudinalPlanner:
       self.last_mpc_a_target = reset_a_desired
       self.output_a_target = reset_a_desired
       self.output_should_stop = False
+      self.mpc.prev_a = np.full_like(self.mpc.prev_a, reset_a_desired)
     else:
       self.output_a_target = output_a_target
       self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)
+    self.was_reset_state = bool(reset_state)
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')

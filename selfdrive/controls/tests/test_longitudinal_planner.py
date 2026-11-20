@@ -4773,6 +4773,7 @@ def test_reset_state_anchors_to_clipped_a_ego_and_prevents_engage_spike(car_inte
   sm_engage["controlsState"].longControlState = LongCtrlState.pid
   sm_engage["selfdriveState"].enabled = True
   sm_engage["starpilotPlan"].vCruise = v_ego
+  planner.mpc.lead_v_filter.x = v_ego + 10.0
   planner.update(sm_engage, toggles)
 
   assert abs(planner.output_a_target) < 0.2
