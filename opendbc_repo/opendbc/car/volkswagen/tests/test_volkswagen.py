@@ -178,8 +178,8 @@ class TestVolkswagenPlatformConfigs:
     high_speed = self._run_meb_hca03_curvatures(
       20.0, [0.010] * 120, curvature_meas=0.008, current_curvature=0.012,
     )
-    assert abs(low_speed[-1] - 0.010) < 2e-5
-    assert abs(mid_15mph[-1] - 0.010) < 2e-5
+    assert abs(low_speed[-1] - 0.0087) < 2e-5
+    assert abs(mid_15mph[-1] - 0.0087) < 2e-5
     assert abs(high_speed[-1] - 0.006) < 2e-5
 
     # ~2 Hz sinusoidal curvature wave (25 steps per period at 50 Hz; tau=0.08s gain ~0.705)
@@ -194,7 +194,7 @@ class TestVolkswagenPlatformConfigs:
     override_ptp = max(override_osc[-50:]) - min(override_osc[-50:])
     assert low_ptp < mid_ptp * 0.75
     assert abs(ptp_15mph - low_ptp) < 2e-5
-    assert abs(override_ptp - mid_ptp) < 2e-4
+    assert abs(override_ptp - 0.87 * mid_ptp) < 2e-4
 
   def test_meb_bumpless_mid_turn_reengage(self):
     cp = self._get_meb_params(CAR.VOLKSWAGEN_ID4_MK1, gateway=True, alpha_long=False)

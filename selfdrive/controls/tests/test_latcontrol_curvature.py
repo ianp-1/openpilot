@@ -69,3 +69,34 @@ def test_curvature_controller_bleeds_integrator_below_pid_cutin():
   for _ in range(100):
     controller.update(True, cs, vm, params, False, 0.01, False, 0.2, None, None, toggles)
   assert abs(controller.pid.i) < 0.06 * i_initial
+
+
+def test_curvature_controller_saturation_scales_at_low_speed():
+  controller, cs, vm, params = build_controller()
+  toggles = SimpleNamespace()
+
+  # 2e-3 1/m lag at 5.8 m/s (0.067 m/s^2) must NOT trip saturation.
+  cs.vEgo = 5.8
+  for _ in range(100):
+    _, _, state = controller.update(True, cs, vm, params, False, 2e-3, False, 0.2, None, None, toggles)
+  assert not state.saturated
+  assert controller.sat_time == 0.0
+
+  # >= 0.30 m/s^2 lag at low speed DOES trip saturation.
+  controller.reset()
+  high_low_speed_curv = 0.31 / (5.8 ** 2)
+  for _ in range(100):
+    _, _, state = controller.update(True, cs, vm, params, False, high_low_speed_curv, False, 0.2, None, None, toggles)
+  assert state.saturated
+
+  # Highway speed (>= 17.3 m/s) keeps the 1e-3 1/m floor.
+  controller.reset()
+  cs.vEgo = 20.0
+  for _ in range(100):
+    _, _, state = controller.update(True, cs, vm, params, False, 0.9e-3, False, 0.2, None, None, toggles)
+  assert not state.saturated
+
+  controller.reset()
+  for _ in range(100):
+    _, _, state = controller.update(True, cs, vm, params, False, 1.2e-3, False, 0.2, None, None, toggles)
+  assert state.saturated

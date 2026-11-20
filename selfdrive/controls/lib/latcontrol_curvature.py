@@ -11,6 +11,7 @@ from openpilot.selfdrive.locationd.helpers import Pose
 
 
 CURVATURE_SATURATION_THRESHOLD = 1e-3  # 1/m
+CURVATURE_SATURATION_MIN_LAT_ACCEL = 0.30  # m/s^2
 
 
 class LatControlCurvature(LatControl):
@@ -64,6 +65,7 @@ class LatControlCurvature(LatControl):
     curvature_log.actualCurvature = float(actual_curvature)
     curvature_log.desiredCurvature = float(desired_curvature)
     curvature_log.output = float(output_curvature)
-    curvature_log.saturated = bool(self._check_saturation(abs(error) > CURVATURE_SATURATION_THRESHOLD, CS,
+    sat_threshold = max(CURVATURE_SATURATION_THRESHOLD, CURVATURE_SATURATION_MIN_LAT_ACCEL / max(CS.vEgo ** 2, 1.0))
+    curvature_log.saturated = bool(self._check_saturation(abs(error) > sat_threshold, CS,
                                                           False, curvature_limited))
     return 0.0, float(output_curvature), curvature_log

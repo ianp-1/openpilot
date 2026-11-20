@@ -1396,16 +1396,15 @@ class LongitudinalPlanner:
       starpilot_car_state = sm["starpilotCarState"]
     except KeyError:
       starpilot_car_state = None
-    accel_pressed = bool(
-      getattr(starpilot_car_state, "accelPressed", False) or
-      getattr(sm["carState"], "gasPressed", False)
-    )
+    gas_pressed = bool(getattr(sm["carState"], "gasPressed", False))
+    button_resume = bool(getattr(starpilot_car_state, "accelPressed", False))
     model_should_stop = bool(getattr(sm["modelV2"].action, "shouldStop", False))
     standstill = bool(getattr(sm["carState"], "standstill", False))
     forcing_stop = bool(getattr(sm["starpilotPlan"], "forcingStop", False))
     red_light = bool(getattr(sm["starpilotPlan"], "redLight", False))
+    manual_resume_pressed = gas_pressed or (button_resume and not red_light)
 
-    if standstill and no_lead and accel_pressed and (forcing_stop or red_light or model_should_stop):
+    if standstill and no_lead and manual_resume_pressed and (forcing_stop or red_light or model_should_stop):
       self.manual_stop_resume_override_until = now_t + MANUAL_STOP_RESUME_OVERRIDE_TIME
 
     return bool(
@@ -2182,6 +2181,8 @@ class LongitudinalPlanner:
       accel_limits = [ACCEL_MIN, ACCEL_MAX]
       accel_limits_turns = [ACCEL_MIN, ACCEL_MAX]
 
+    reset_a_desired = None
+    reset_v_desired = None
     if reset_state:
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
@@ -2189,6 +2190,8 @@ class LongitudinalPlanner:
       self.last_mpc_a_target = float(self.a_desired)
       self.model_allow_throttle = True
       self.model_allow_throttle_transition_t = 0.0
+      reset_a_desired = float(self.a_desired)
+      reset_v_desired = float(v_ego)
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -3116,9 +3119,11 @@ class LongitudinalPlanner:
     )
     close_lead_cap_below_comfort = any(cap < comfort_output_accel_min for cap in close_lead_caps)
     lead_brake_floor_active = (
-      vision_brake_cap_active or
-      radar_lead_brake_floor_active or
-      close_lead_cap_below_comfort
+      not reset_state and (
+        vision_brake_cap_active or
+        radar_lead_brake_floor_active or
+        close_lead_cap_below_comfort
+      )
     )
     if lead_brake_floor_active:
       output_accel_min = min(output_accel_min, vision_cap_accel_min)
@@ -3347,8 +3352,15 @@ class LongitudinalPlanner:
       self.a_desired = min(self.a_desired, accord_stop_go_target)
       output_a_target = accord_stop_go_target
 
-    self.output_a_target = output_a_target
-    self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)
+    if reset_state:
+      self.a_desired = reset_a_desired
+      self.v_desired_filter.x = reset_v_desired
+      self.last_mpc_a_target = reset_a_desired
+      self.output_a_target = reset_a_desired
+      self.output_should_stop = False
+    else:
+      self.output_a_target = output_a_target
+      self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')

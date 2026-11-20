@@ -14,6 +14,7 @@ MEB_LOW_SPEED_SMOOTH_BP = [6.7, 11.2]         # m/s (~15-25 mph)
 MEB_LOW_SPEED_SMOOTH_TAU = [0.08, 0.0]        # s; 50 Hz curvature smoothing at low speed
 MEB_CURVATURE_OFFSET_TAU = 0.25               # s; LPF on (CS.curvature_meas - CC.currentCurvature)
 MEB_CURVATURE_OFFSET_SPEED_BP = [8.5, 12.5]   # m/s (~19-28 mph, straddling 10 m/s PID cut-in)
+MEB_LOW_SPEED_FF_SCALE = 0.87
 
 
 class CarController(CarControllerBase):
@@ -77,9 +78,10 @@ class CarController(CarControllerBase):
           self.meb_curvature_offset_filtered = self._exp_smooth(raw_offset, self.meb_curvature_offset_filtered,
                                                                 MEB_CURVATURE_OFFSET_TAU, steer_dt)
           offset_weight = float(np.interp(CS.out.vEgo, MEB_CURVATURE_OFFSET_SPEED_BP, [0.0, 1.0]))
+          ff_scale = float(np.interp(CS.out.vEgo, MEB_CURVATURE_OFFSET_SPEED_BP, [MEB_LOW_SPEED_FF_SCALE, 1.0]))
           smooth_tau = 0.0 if CS.out.steeringPressed else float(np.interp(CS.out.vEgo, MEB_LOW_SPEED_SMOOTH_BP,
                                                                            MEB_LOW_SPEED_SMOOTH_TAU))
-          self.meb_curvature_filtered = self._exp_smooth(float(actuators.curvature), self.meb_curvature_filtered,
+          self.meb_curvature_filtered = self._exp_smooth(float(actuators.curvature) * ff_scale, self.meb_curvature_filtered,
                                                          smooth_tau, steer_dt)
           apply_curvature = self.meb_curvature_filtered + offset_weight * self.meb_curvature_offset_filtered
           apply_curvature = self.CCP.CURVATURE_LIMITS.apply_limits(apply_curvature, self.apply_curvature_last, CS.out.vEgoRaw,

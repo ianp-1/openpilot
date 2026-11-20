@@ -261,7 +261,10 @@ class ConditionalExperimentalMode:
     )
     force_stop_active = bool(getattr(self.starpilot_planner.starpilot_vcruise, "forcing_stop", False))
     model_stopped = bool(getattr(self.starpilot_planner, "model_stopped", False))
-    pedal_override = bool(getattr(sm["carState"], "gasPressed", False) or getattr(sm["starpilotCarState"], "accelPressed", False))
+    gas_pressed = bool(getattr(sm["carState"], "gasPressed", False))
+    accel_pressed = bool(getattr(sm["starpilotCarState"], "accelPressed", False))
+    red_light_active = bool(self.stop_light_detected and not dash_stop_sign and not force_stop_active)
+    pedal_override = gas_pressed or (accel_pressed and not red_light_active)
 
     if pedal_override or not bool(sm["carState"].standstill):
       self.standstill_stop_reason = None

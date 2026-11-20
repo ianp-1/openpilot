@@ -2316,6 +2316,33 @@ def test_manual_resume_override_does_not_clear_stopped_lead_stop(model_version):
 
 
 @pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
+def test_manual_resume_override_ignores_accel_button_at_red_light_but_accepts_gas(model_version):
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CIVIC)
+  planner = LongitudinalPlanner(CP, init_v=0.0)
+  sm = make_sm(0.0, desired_accel=0.0, min_accel=-0.5)
+  sm["carState"].standstill = True
+  sm["carState"].gasPressed = False
+  sm["controlsState"].longControlState = LongCtrlState.stopping
+  sm["modelV2"].action.shouldStop = True
+  sm["starpilotPlan"].forcingStop = True
+  sm["starpilotPlan"].redLight = True
+  sm["starpilotCarState"] = SimpleNamespace(accelPressed=True)
+
+  planner.update(sm, make_toggles(model_version))
+
+  assert planner.output_should_stop
+  assert planner.output_a_target <= 0.0
+  assert planner.manual_stop_resume_override_until == 0.0
+
+  sm["starpilotCarState"] = SimpleNamespace(accelPressed=False)
+  sm["carState"].gasPressed = True
+  planner.update(sm, make_toggles(model_version))
+
+  assert not planner.output_should_stop
+  assert planner.output_a_target >= 0.2
+
+
+@pytest.mark.parametrize("model_version", ["v11", "v12", "v13", "v14", "v15"])
 def test_standstill_moving_lead_does_not_force_resume_while_should_stop(model_version):
   v_ego = 0.0
 
@@ -4656,3 +4683,130 @@ def test_get_close_lead_brake_cap_ttc_ramp():
   assert cap_just_below > cap_mid_high > cap_mid > cap_at_full
   assert cap_at_full == pytest.approx(-expected_required_decel(35.4))
   assert cap_below_full == pytest.approx(-expected_required_decel(31.3))
+
+
+@pytest.mark.parametrize("car_interface,candidate", [
+  (VolkswagenCarInterface, VW_CAR.VOLKSWAGEN_ID4_MK1),
+  (CarInterface, CAR.HONDA_CRV_5G),
+])
+def test_reset_state_anchors_to_clipped_a_ego_and_prevents_engage_spike(car_interface, candidate):
+  v_ego = 20.0
+  min_accel = -1.0
+  CP = car_interface.get_non_essential_params(candidate)
+  CP.openpilotLongitudinalControl = True
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles("v15")
+
+  close_radar_lead = make_lead(
+    status=True, d_rel=18.0, v_lead=14.0, a_lead=-1.5, radar=True, model_prob=0.99,
+  )
+
+  sm_clip_high = make_sm(
+    v_ego,
+    desired_accel=0.2,
+    min_accel=min_accel,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=close_radar_lead,
+  )
+  sm_clip_high["carState"].aEgo = 2.6
+  sm_clip_high["controlsState"].longControlState = LongCtrlState.off
+  sm_clip_high["selfdriveState"].enabled = False
+  sm_clip_high["starpilotPlan"].vCruise = v_ego + 5.0
+  planner.update(sm_clip_high, toggles)
+
+  assert planner.a_desired == pytest.approx(2.0)
+  assert planner.v_desired_filter.x == pytest.approx(v_ego)
+  assert planner.last_mpc_a_target == pytest.approx(2.0)
+  assert planner.output_a_target == pytest.approx(2.0)
+  assert not planner.output_should_stop
+
+  sm_clip_low = make_sm(
+    v_ego,
+    desired_accel=0.2,
+    min_accel=min_accel,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=close_radar_lead,
+  )
+  sm_clip_low["carState"].aEgo = -1.8
+  sm_clip_low["controlsState"].longControlState = LongCtrlState.off
+  sm_clip_low["selfdriveState"].enabled = False
+  sm_clip_low["starpilotPlan"].vCruise = v_ego + 5.0
+  planner.update(sm_clip_low, toggles)
+
+  assert planner.a_desired == pytest.approx(-1.0)
+  assert planner.v_desired_filter.x == pytest.approx(v_ego)
+  assert planner.last_mpc_a_target == pytest.approx(-1.0)
+  assert planner.output_a_target == pytest.approx(-1.0)
+  assert not planner.output_should_stop
+
+  sm_disengaged = make_sm(
+    v_ego,
+    desired_accel=0.0,
+    min_accel=min_accel,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=close_radar_lead,
+  )
+  sm_disengaged["carState"].aEgo = 0.0
+  sm_disengaged["controlsState"].longControlState = LongCtrlState.off
+  sm_disengaged["selfdriveState"].enabled = False
+  sm_disengaged["starpilotPlan"].vCruise = v_ego
+  planner.update(sm_disengaged, toggles)
+
+  assert planner.a_desired == pytest.approx(0.0)
+  assert planner.v_desired_filter.x == pytest.approx(v_ego)
+  assert planner.last_mpc_a_target == pytest.approx(0.0)
+  assert planner.output_a_target == pytest.approx(0.0)
+  assert not planner.output_should_stop
+
+  sm_engage = make_sm(
+    v_ego,
+    desired_accel=0.0,
+    min_accel=min_accel,
+    experimental_mode=False,
+    tracking_lead=False,
+    lead_one=make_lead(status=False),
+  )
+  sm_engage["carState"].aEgo = 0.0
+  sm_engage["controlsState"].longControlState = LongCtrlState.pid
+  sm_engage["selfdriveState"].enabled = True
+  sm_engage["starpilotPlan"].vCruise = v_ego
+  planner.update(sm_engage, toggles)
+
+  assert abs(planner.output_a_target) < 0.2
+  assert abs(planner.a_desired) < 0.2
+
+
+@pytest.mark.parametrize("car_interface,candidate", [
+  (VolkswagenCarInterface, VW_CAR.VOLKSWAGEN_ID4_MK1),
+  (CarInterface, CAR.HONDA_CRV_5G),
+])
+def test_reset_state_preserves_live_fcw_while_disengaged(car_interface, candidate, monkeypatch):
+  v_ego = 20.0
+  CP = car_interface.get_non_essential_params(candidate)
+  CP.openpilotLongitudinalControl = True
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  sm = make_sm(
+    v_ego,
+    desired_accel=0.0,
+    min_accel=-0.5,
+    experimental_mode=False,
+    tracking_lead=True,
+    lead_one=make_lead(status=True, d_rel=18.0, v_lead=14.0, a_lead=-1.5, radar=True, model_prob=0.99),
+  )
+  sm["carState"].aEgo = 0.1
+  sm["controlsState"].longControlState = LongCtrlState.off
+  sm["selfdriveState"].enabled = False
+  sm["starpilotPlan"].vCruise = v_ego + 5.0
+
+  monkeypatch.setattr(longitudinal_planner_module, "should_publish_planner_fcw", lambda *args, **kwargs: True)
+  planner.update(sm, make_toggles("v15"))
+
+  assert planner.fcw
+  assert planner.a_desired == pytest.approx(0.1)
+  assert planner.v_desired_filter.x == pytest.approx(v_ego)
+  assert planner.last_mpc_a_target == pytest.approx(0.1)
+  assert planner.output_a_target == pytest.approx(0.1)
+  assert not planner.output_should_stop

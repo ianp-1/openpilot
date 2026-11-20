@@ -70,6 +70,9 @@ LANE_CHANGE_ARREST_JERK_FLOOR = 0.6
 LANE_CHANGE_ARREST_PURSUIT_TAU = 0.2   # s
 LANE_CHANGE_ARREST_GAP_DEADBAND = 5e-5  # 1/m
 LANE_CHANGE_ARREST_RISE_TAU = 0.2
+# Bypass lane-change jerk limiting when entering a strong curve (e.g., signaled on-ramp)
+# so ramp curvature buildup is not choked by lane-change smoothing.
+LANE_CHANGE_CURVE_BYPASS_LAT_ACCEL = 1.4  # m/s^2 (normal highway LCs peak <= 1.2 m/s^2)
 
 # Low-speed turn-intent curvature hold. Approaching a turn with the blinker on, the
 # model's time-based plan collapses as the car slows to a stop: desiredCurvature decays
@@ -902,6 +905,7 @@ class Controls:
     jerk_factor = 1.0
     if self.starpilot_toggles.lane_change_pace < 10:
       set_jerk = self.starpilot_toggles.lane_change_jerk_factor
+      curve_bypass = abs(new_desired_curvature) * (CS.vEgo ** 2) > LANE_CHANGE_CURVE_BYPASS_LAT_ACCEL
       in_lane_change = model_v2.meta.laneChangeState in (LaneChangeState.laneChangeStarting, LaneChangeState.laneChangeFinishing) \
           and CS.vEgo >= self.starpilot_toggles.minimum_lane_change_speed
       # Hold the tight jerk limit for the whole maneuver, then taper back to stock so the
@@ -909,30 +913,36 @@ class Controls:
       # through a mostly-relaxed clamp. Only the jerk (curvature rate) is tightened: capping
       # lat accel strangles the end-of-maneuver arrest and lets the car glide past the new
       # lane center before it can build enough counter-curvature.
-      if in_lane_change:
-        self.lc_smooth_release = LANE_CHANGE_SMOOTH_RELEASE_T
-        if self.lc_entry_sign == 0.0 and abs(new_desired_curvature - self.desired_curvature) > 2e-4:
-          self.lc_entry_sign = math.copysign(1.0, new_desired_curvature - self.desired_curvature)
+      if curve_bypass:
+        self.lc_smooth_release = 0.0
+        self.lc_entry_sign = 0.0
+        jerk_factor = 1.0
+        self.lc_arrest_jerk_factor = 1.0
       else:
-        self.lc_smooth_release = max(self.lc_smooth_release - DT_CTRL, 0.0)
-        if self.lc_smooth_release <= 0.0:
-          self.lc_entry_sign = 0.0
-      if self.lc_smooth_release > 0.0:
-        release = 1.0 - self.lc_smooth_release / LANE_CHANGE_SMOOTH_RELEASE_T  # 0 in maneuver → 1 after
-        jerk_factor = set_jerk + (1.0 - set_jerk) * release
-        step = new_desired_curvature - self.desired_curvature
-        model_unwinding = self.lc_entry_sign != 0.0 and abs(step) > LANE_CHANGE_ARREST_GAP_DEADBAND and \
-            math.copysign(1.0, step) == -self.lc_entry_sign
-        if model_unwinding:
-          v_lim = max(CS.vEgo, 1.0)
-          gap = max(abs(step) - LANE_CHANGE_ARREST_GAP_DEADBAND, 0.0)
-          jf_gap = (gap / LANE_CHANGE_ARREST_PURSUIT_TAU) * v_lim ** 2 / MAX_LATERAL_JERK
-          arrest_cap = LANE_CHANGE_ARREST_JERK_FLOOR + (1.0 - LANE_CHANGE_ARREST_JERK_FLOOR) * release
-          jerk_factor = max(jerk_factor, min(arrest_cap, jerk_factor + jf_gap))
-        if jerk_factor > self.lc_arrest_jerk_factor:
-          rise_alpha = 1.0 - math.exp(-DT_CTRL / LANE_CHANGE_ARREST_RISE_TAU)
-          jerk_factor = self.lc_arrest_jerk_factor + rise_alpha * (jerk_factor - self.lc_arrest_jerk_factor)
-      self.lc_arrest_jerk_factor = jerk_factor
+        if in_lane_change:
+          self.lc_smooth_release = LANE_CHANGE_SMOOTH_RELEASE_T
+          if self.lc_entry_sign == 0.0 and abs(new_desired_curvature - self.desired_curvature) > 2e-4:
+            self.lc_entry_sign = math.copysign(1.0, new_desired_curvature - self.desired_curvature)
+        else:
+          self.lc_smooth_release = max(self.lc_smooth_release - DT_CTRL, 0.0)
+          if self.lc_smooth_release <= 0.0:
+            self.lc_entry_sign = 0.0
+        if self.lc_smooth_release > 0.0:
+          release = 1.0 - self.lc_smooth_release / LANE_CHANGE_SMOOTH_RELEASE_T  # 0 in maneuver → 1 after
+          jerk_factor = set_jerk + (1.0 - set_jerk) * release
+          step = new_desired_curvature - self.desired_curvature
+          model_unwinding = self.lc_entry_sign != 0.0 and abs(step) > LANE_CHANGE_ARREST_GAP_DEADBAND and \
+              math.copysign(1.0, step) == -self.lc_entry_sign
+          if model_unwinding:
+            v_lim = max(CS.vEgo, 1.0)
+            gap = max(abs(step) - LANE_CHANGE_ARREST_GAP_DEADBAND, 0.0)
+            jf_gap = (gap / LANE_CHANGE_ARREST_PURSUIT_TAU) * v_lim ** 2 / MAX_LATERAL_JERK
+            arrest_cap = LANE_CHANGE_ARREST_JERK_FLOOR + (1.0 - LANE_CHANGE_ARREST_JERK_FLOOR) * release
+            jerk_factor = max(jerk_factor, min(arrest_cap, jerk_factor + jf_gap))
+          if jerk_factor > self.lc_arrest_jerk_factor:
+            rise_alpha = 1.0 - math.exp(-DT_CTRL / LANE_CHANGE_ARREST_RISE_TAU)
+            jerk_factor = self.lc_arrest_jerk_factor + rise_alpha * (jerk_factor - self.lc_arrest_jerk_factor)
+        self.lc_arrest_jerk_factor = jerk_factor
 
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll,
                                                                jerk_factor)
