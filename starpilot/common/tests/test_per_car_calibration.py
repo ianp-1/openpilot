@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from openpilot.starpilot.common.per_car_calibration import (
   ID4_DEFAULT_CAMERA_OFFSET_M,
+  ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG,
+  get_mount_roll_offset_deg,
   LIVE_CALIBRATION_KEYS,
   sync_per_car_calibration,
 )
@@ -131,3 +133,28 @@ def test_explicit_reset_calibration_is_respected(tmp_path):
   prev_out = sync_per_car_calibration(params, crv_cp, id4_cp, bank_path=bank_path)
   assert prev_out is crv_cp
   assert params.get("CalibrationParams") is None
+
+
+def test_per_car_mount_roll_offset_is_isolated_and_preserves_manual_override(tmp_path):
+  import json
+  params = _MemoryParams(tmp_path)
+  bank_path = tmp_path / "per_car_calibration.json"
+  crv_cp = _StubCP("HONDA_CRV_5G", brand="honda")
+  id4_cp = _StubCP("VOLKSWAGEN_ID4_MK1", brand="volkswagen")
+
+  assert get_mount_roll_offset_deg(params, "VOLKSWAGEN_ID4_MK1", bank_path=bank_path) == ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG
+  assert get_mount_roll_offset_deg(params, "HONDA_CRV_5G", bank_path=bank_path) == 0.0
+
+  sync_per_car_calibration(params, None, id4_cp, bank_path=bank_path)
+  assert get_mount_roll_offset_deg(params, "VOLKSWAGEN_ID4_MK1", bank_path=bank_path) == ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG
+
+  bank = json.loads(bank_path.read_text(encoding="utf-8"))
+  bank["cars"]["VOLKSWAGEN_ID4_MK1"]["mount_roll_offset_deg"] = -1.6
+  bank_path.write_text(json.dumps(bank, indent=2), encoding="utf-8")
+
+  sync_per_car_calibration(params, id4_cp, crv_cp, bank_path=bank_path)
+  assert get_mount_roll_offset_deg(params, "HONDA_CRV_5G", bank_path=bank_path) == 0.0
+  assert get_mount_roll_offset_deg(params, "VOLKSWAGEN_ID4_MK1", bank_path=bank_path) == -1.6
+
+  sync_per_car_calibration(params, crv_cp, id4_cp, bank_path=bank_path)
+  assert get_mount_roll_offset_deg(params, "VOLKSWAGEN_ID4_MK1", bank_path=bank_path) == -1.6

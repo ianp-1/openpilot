@@ -309,10 +309,12 @@ def get_control_lateral_smooth_seconds(brand: str, v_ego: float, vehicle_smooth_
   return LAT_SMOOTH_SECONDS
 
 
-def turn_lead_allowed(brand: str, lateral_control_mode: car.CarControl.Actuators.LateralControlMode) -> bool:
-  # Torque steering mechanically damps the turn-lead fade. A direct angle
-  # controller follows the resulting lead/catch-up cycle literally, which can
-  # reverse the wheel command several times during one turn initiation.
+def turn_lead_allowed(brand: str, lateral_control_mode: car.CarControl.Actuators.LateralControlMode,
+                      steer_control_type: "car.CarParams.SteerControlType | None" = None) -> bool:
+  # Torque steering mechanically damps the turn-lead fade. Direct angle/curvature
+  # controllers follow the lead/catch-up cycle literally and wind the wheel aggressively.
+  if steer_control_type == car.CarParams.SteerControlType.curvatureDEPRECATED:
+    return False
   return brand != "rivian" or lateral_control_mode != LateralControlMode.angle
 
 
@@ -683,7 +685,7 @@ class Controls:
     # edge: a model actively steering against the blinker is correcting something the
     # lead must not fight (see the constants comment for the 2026-07-19 failures).
     lateral_control_mode = self.sm['carOutput'].actuatorsOutput.lateralControlMode
-    if (turn_lead_allowed(self.CP.brand, lateral_control_mode) and
+    if (turn_lead_allowed(self.CP.brand, lateral_control_mode, getattr(self.CP, 'steerControlType', None)) and
         CC.latActive and blinker_dir != 0.0 and
         model_v2.meta.laneChangeState == LaneChangeState.off and
         TURN_LEAD_MIN_SPEED <= CS.vEgo < TURN_LEAD_MAX_SPEED and
@@ -917,7 +919,6 @@ class Controls:
         self.lc_smooth_release = 0.0
         self.lc_entry_sign = 0.0
         jerk_factor = 1.0
-        self.lc_arrest_jerk_factor = 1.0
       else:
         if in_lane_change:
           self.lc_smooth_release = LANE_CHANGE_SMOOTH_RELEASE_T
@@ -939,10 +940,10 @@ class Controls:
             jf_gap = (gap / LANE_CHANGE_ARREST_PURSUIT_TAU) * v_lim ** 2 / MAX_LATERAL_JERK
             arrest_cap = LANE_CHANGE_ARREST_JERK_FLOOR + (1.0 - LANE_CHANGE_ARREST_JERK_FLOOR) * release
             jerk_factor = max(jerk_factor, min(arrest_cap, jerk_factor + jf_gap))
-          if jerk_factor > self.lc_arrest_jerk_factor:
-            rise_alpha = 1.0 - math.exp(-DT_CTRL / LANE_CHANGE_ARREST_RISE_TAU)
-            jerk_factor = self.lc_arrest_jerk_factor + rise_alpha * (jerk_factor - self.lc_arrest_jerk_factor)
-        self.lc_arrest_jerk_factor = jerk_factor
+      if jerk_factor > self.lc_arrest_jerk_factor:
+        rise_alpha = 1.0 - math.exp(-DT_CTRL / LANE_CHANGE_ARREST_RISE_TAU)
+        jerk_factor = self.lc_arrest_jerk_factor + rise_alpha * (jerk_factor - self.lc_arrest_jerk_factor)
+      self.lc_arrest_jerk_factor = jerk_factor
 
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll,
                                                                jerk_factor)

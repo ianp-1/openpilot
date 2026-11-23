@@ -12,6 +12,7 @@ from openpilot.selfdrive.locationd.models.constants import GENERATED_DIR
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.common.swaglog import cloudlog
 
+from openpilot.starpilot.common.per_car_calibration import get_mount_roll_offset_deg
 from openpilot.starpilot.common.starpilot_variables import get_starpilot_toggles
 
 MAX_ANGLE_OFFSET_DELTA = 20 * DT_MDL  # Max 20 deg/s
@@ -35,7 +36,7 @@ def resolve_vehicle_model_params(learned_steer_ratio: float, learned_stiffness: 
 
 
 class VehicleParamsLearner:
-  def __init__(self, CP: car.CarParams, steer_ratio: float, stiffness_factor: float, angle_offset: float, P_initial: np.ndarray | None = None):
+  def __init__(self, CP: car.CarParams, steer_ratio: float, stiffness_factor: float, angle_offset: float, P_initial: np.ndarray | None = None, mount_roll_offset_rad: float = 0.0):
     self.kf = CarKalman(GENERATED_DIR)
 
     self.x_initial = CarKalman.initial_x.copy()
@@ -67,6 +68,7 @@ class VehicleParamsLearner:
 
     self.reset(None)
 
+    self.mount_roll_offset_rad = float(mount_roll_offset_rad)
     self.CP = CP
 
   def reset(self, t: float | None):
@@ -91,9 +93,11 @@ class VehicleParamsLearner:
 
       localizer_roll, localizer_roll_std = device_pose.orientation.x, device_pose.orientation.x_std
       localizer_roll_std = np.radians(1) if np.isnan(localizer_roll_std) else localizer_roll_std
-      roll_valid = (localizer_roll_std < ROLL_STD_MAX) and (ROLL_MIN < localizer_roll < ROLL_MAX) and msg.sensorsOK
+      # Subtract per-car static mount roll (without touching calibrationd rpyCalib for camera warp)
+      corrected_roll = localizer_roll - self.mount_roll_offset_rad
+      roll_valid = (localizer_roll_std < ROLL_STD_MAX) and (ROLL_MIN < corrected_roll < ROLL_MAX) and msg.sensorsOK
       if roll_valid:
-        roll = localizer_roll
+        roll = corrected_roll
         # Experimentally found multiplier of 2 to be best trade-off between stability and accuracy or similar?
         roll_std = 2 * localizer_roll_std
       else:
@@ -292,7 +296,8 @@ def main():
   migrate_cached_vehicle_params_if_needed(params)
 
   steer_ratio, stiffness_factor, angle_offset_deg, pInitial = retrieve_initial_vehicle_params(params, CP, REPLAY, DEBUG)
-  learner = VehicleParamsLearner(CP, steer_ratio, stiffness_factor, np.radians(angle_offset_deg), pInitial)
+  mount_roll_offset_rad = float(np.radians(get_mount_roll_offset_deg(params, CP.carFingerprint)))
+  learner = VehicleParamsLearner(CP, steer_ratio, stiffness_factor, np.radians(angle_offset_deg), pInitial, mount_roll_offset_rad=mount_roll_offset_rad)
 
   sm = sm.extend(['starpilotPlan'])
 

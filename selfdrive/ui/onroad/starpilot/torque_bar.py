@@ -168,7 +168,7 @@ class TorqueBar(Widget):
     # angle channel is active, use a lateral-acceleration estimate for the bar.
     # The shared Rivian mode detector keys off the actual CAN torque so the bar
     # follows live angle/torque handoffs rather than the controller request.
-    if (ui_state.sm['controlsState'].lateralControlState.which() == 'angleState' or
+    if (ui_state.sm['controlsState'].lateralControlState.which() in ('angleState', 'curvatureStateDEPRECATED') or
         rivian_lateral_mode.mode == "angle"):
       controls_state = ui_state.sm['controlsState']
       car_state = ui_state.sm['carState']
@@ -184,7 +184,7 @@ class TorqueBar(Widget):
       # Roll is less accurate near standstill, so reduce its effect at low speed
       roll_compensation = live_parameters.roll * ACCELERATION_DUE_TO_GRAVITY * np.interp(car_state.vEgo, [5, 15], [0.0, 1.0])
       lateral_acceleration = actual_lateral_accel - roll_compensation
-      max_lateral_acceleration = ui_state.CP.maxLateralAccel if ui_state.CP else DEFAULT_MAX_LAT_ACCEL
+      max_lateral_acceleration = ui_state.CP.maxLateralAccel if (ui_state.CP and ui_state.CP.maxLateralAccel > 0) else DEFAULT_MAX_LAT_ACCEL
 
       if not car_control.latActive:
         self._torque_filter.update(0.0)

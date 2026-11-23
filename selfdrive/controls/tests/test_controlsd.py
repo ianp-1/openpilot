@@ -254,19 +254,24 @@ def test_lane_change_curve_bypass_releases_jerk_limit_on_onramp():
   assert controls.lc_arrest_jerk_factor < 0.25
   assert (controls.desired_curvature - prev_curv) < 0.25 * (MAX_LATERAL_JERK / (25.0 ** 2)) * DT_CTRL
 
-  # Signaled on-ramp curve (> 1.4 m/s^2) immediately clears the clamp and sets jerk_factor = 1.0.
+  # Signaled on-ramp curve (> 1.4 m/s^2) clears the LC hold and ramps jerk_factor smoothly via rise filter.
   assert LANE_CHANGE_CURVE_BYPASS_LAT_ACCEL == 1.4
   prev_curv = controls.desired_curvature
+  prev_jf = controls.lc_arrest_jerk_factor
   cs.vEgo = 20.0
   model_v2.meta.laneChangeState = log.LaneChangeState.laneChangeStarting
   model_v2.action.desiredCurvature = 0.0040  # 0.0040 * 20^2 = 1.6 > 1.4 m/s^2
   controls.state_control()
 
-  full_step = (MAX_LATERAL_JERK * 1.0 / (20.0 ** 2)) * DT_CTRL
   assert controls.lc_smooth_release == 0.0
   assert controls.lc_entry_sign == 0.0
-  assert controls.lc_arrest_jerk_factor == 1.0
-  assert abs((controls.desired_curvature - prev_curv) - full_step) < 1e-9
+  assert prev_jf < controls.lc_arrest_jerk_factor < 0.35
+  ramped_step = (MAX_LATERAL_JERK * controls.lc_arrest_jerk_factor / (20.0 ** 2)) * DT_CTRL
+  assert abs((controls.desired_curvature - prev_curv) - ramped_step) < 1e-9
+
+  for _ in range(40):
+    controls.state_control()
+  assert controls.lc_arrest_jerk_factor > 0.85
 
   # Verify abs(curvature) symmetry for a left-curving on-ramp (> 1.4 m/s^2).
   controls.desired_curvature = 0.0
@@ -278,5 +283,13 @@ def test_lane_change_curve_bypass_releases_jerk_limit_on_onramp():
 
   assert controls.lc_smooth_release == 0.0
   assert controls.lc_entry_sign == 0.0
-  assert controls.lc_arrest_jerk_factor == 1.0
-  assert abs(controls.desired_curvature - (-full_step)) < 1e-9
+  assert 0.2 < controls.lc_arrest_jerk_factor < 0.35
+  left_step = (MAX_LATERAL_JERK * controls.lc_arrest_jerk_factor / (20.0 ** 2)) * DT_CTRL
+  assert abs(controls.desired_curvature - (-left_step)) < 1e-9
+
+  # Clearing curve_bypass mid-ramp keeps ramping smoothly toward 1.0 instead of dropping.
+  jf_mid = controls.lc_arrest_jerk_factor
+  model_v2.meta.laneChangeState = log.LaneChangeState.off
+  model_v2.action.desiredCurvature = -0.0010
+  controls.state_control()
+  assert controls.lc_arrest_jerk_factor > jf_mid

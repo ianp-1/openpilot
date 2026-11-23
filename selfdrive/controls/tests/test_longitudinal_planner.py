@@ -4811,3 +4811,128 @@ def test_reset_state_preserves_live_fcw_while_disengaged(car_interface, candidat
   assert planner.last_mpc_a_target == pytest.approx(0.1)
   assert planner.output_a_target == pytest.approx(0.1)
   assert not planner.output_should_stop
+
+
+@pytest.mark.parametrize("car_interface,candidate", [
+  (VolkswagenCarInterface, VW_CAR.VOLKSWAGEN_ID4_MK1),
+  (CarInterface, CAR.HONDA_CRV_5G),
+])
+def test_lane_change_merge_floor_ramps_smoothly_and_releases_without_steps(car_interface, candidate):
+  v_ego = 33.0
+  CP = car_interface.get_non_essential_params(candidate)
+  CP.openpilotLongitudinalControl = True
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles("v15")
+  toggles.lane_change_close_gap = True
+  toggles.minimum_lane_change_speed = 15.0
+
+  # Simulate pre-LC decel behind slower lead at 68m, then start left LC.
+  planner.mpc.lead_v_filter.x = 30.0
+  lead = make_lead(status=True, d_rel=68.0, v_lead=30.0, a_lead=0.0, radar=True, model_prob=0.99)
+  sm_pre = make_sm(v_ego, desired_accel=-0.35, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=lead)
+  sm_pre["starpilotPlan"].vCruise = 36.0
+  planner.update(sm_pre, toggles)
+  prev_target = planner.output_a_target
+
+  sm_lc = make_sm(v_ego, desired_accel=-0.35, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=lead)
+  sm_lc["starpilotPlan"].vCruise = 36.0
+  sm_lc["modelV2"].meta.laneChangeState = log.LaneChangeState.laneChangeStarting
+  sm_lc["modelV2"].meta.laneChangeDirection = log.LaneChangeDirection.left
+  planner.update(sm_lc, toggles)
+
+  assert planner.lc_merge_boost_active
+  assert prev_target < planner.output_a_target <= prev_target + 1.0 * planner.dt + 1e-6
+
+  # Taper cruise headroom smoothly from 2.5 to 0.5 m/s without a cliff jump.
+  prev_floor = None
+  for headroom in (2.5, 2.0, 1.5, 1.0, 0.5):
+    sm_lc["starpilotPlan"].vCruise = v_ego + headroom
+    f = planner.get_lane_change_merge_accel_floor(sm_lc, toggles, v_ego, v_ego + headroom, 0.35, False)
+    if prev_floor is not None:
+      assert 0.0 <= prev_floor - f <= 0.35
+    prev_floor = f
+
+  # When boost is active and road clears to gentle cruise settle, release is jerk-limited.
+  planner.mpc.lead_v_filter.x = v_ego + 10.0
+  planner.output_a_target = 0.45
+  planner.lc_merge_boost_active = True
+  sm_clear = make_sm(v_ego, desired_accel=0.05, min_accel=-3.5, experimental_mode=False, tracking_lead=False)
+  sm_clear["starpilotPlan"].vCruise = v_ego + 0.2
+  planner.update(sm_clear, toggles)
+  assert planner.output_a_target == pytest.approx(0.45 - 1.2 * planner.dt)
+
+  # Braking lead drops prior LC merge boost immediately with no release hold.
+  planner.output_a_target = 0.45
+  planner.lc_merge_boost_active = True
+  planner.mpc.lead_v_filter.x = 22.0
+  braking_lead = make_lead(status=True, d_rel=35.0, v_lead=22.0, a_lead=-1.0, radar=True, model_prob=0.99)
+  sm_brake = make_sm(v_ego, desired_accel=-1.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=braking_lead)
+  sm_brake["starpilotPlan"].vCruise = 36.0
+  planner.update(sm_brake, toggles)
+  assert not planner.lc_merge_boost_active
+  assert planner.output_a_target < 0.0
+
+
+@pytest.mark.parametrize("car_interface,candidate", [
+  (VolkswagenCarInterface, VW_CAR.VOLKSWAGEN_ID4_MK1),
+  (CarInterface, CAR.HONDA_CRV_5G),
+])
+def test_engage_post_mpc_close_lead_cap_slews_moderate_decel_and_preserves_emergency(car_interface, candidate):
+  v_ego = 20.0
+  CP = car_interface.get_non_essential_params(candidate)
+  CP.openpilotLongitudinalControl = True
+  planner = LongitudinalPlanner(CP, init_v=v_ego)
+  toggles = make_toggles("v15")
+
+  # Disengaged frame anchored at aEgo=0.0, followed by moderate close-lead cap on engage.
+  planner.mpc.lead_v_filter.x = 17.0
+  mod_lead = make_lead(status=True, d_rel=18.0, v_lead=17.0, a_lead=0.0, radar=True, model_prob=0.99)
+  sm_off = make_sm(v_ego, desired_accel=0.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=mod_lead)
+  sm_off["carState"].aEgo = 0.0
+  sm_off["controlsState"].longControlState = LongCtrlState.off
+  sm_off["selfdriveState"].enabled = False
+  planner.update(sm_off, toggles)
+  assert planner.output_a_target == pytest.approx(0.0)
+
+  sm_on = make_sm(v_ego, desired_accel=0.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=mod_lead)
+  sm_on["carState"].aEgo = 0.0
+  sm_on["controlsState"].longControlState = LongCtrlState.pid
+  sm_on["selfdriveState"].enabled = True
+  planner.update(sm_on, toggles)
+  assert planner.output_a_target >= min(planner.last_mpc_a_target, -3.0 * planner.dt) - 1e-6
+  assert planner.output_a_target > -0.45
+
+  # Close-lead-cap check mirroring 47--5 (close_lead_brake_cap < -1.0 is slewed on engage).
+  close_planner = LongitudinalPlanner(CP, init_v=6.5)
+  close_planner.mpc.lead_v_filter.x = 4.7
+  close_lead = make_lead(status=True, d_rel=16.4, v_lead=4.7, a_lead=-1.59, radar=True, model_prob=0.99)
+  sm_off_c = make_sm(6.5, desired_accel=0.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=close_lead)
+  sm_off_c["carState"].aEgo = 0.0
+  sm_off_c["controlsState"].longControlState = LongCtrlState.off
+  sm_off_c["selfdriveState"].enabled = False
+  close_planner.update(sm_off_c, toggles)
+  sm_on_c = make_sm(6.5, desired_accel=0.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=close_lead)
+  sm_on_c["carState"].aEgo = 0.0
+  sm_on_c["controlsState"].longControlState = LongCtrlState.pid
+  sm_on_c["selfdriveState"].enabled = True
+  close_planner.update(sm_on_c, toggles)
+  assert close_planner.get_close_lead_brake_cap(close_lead, 6.5, -3.5) < -1.0
+  assert close_planner.output_a_target >= min(close_planner.last_mpc_a_target, -3.0 * close_planner.dt) - 1e-6
+  assert close_planner.output_a_target > -0.5
+
+  # Emergency braking lead (< -2.0 m/s^2 cap) bypasses engage slew completely.
+  emerg_planner = LongitudinalPlanner(CP, init_v=v_ego)
+  emerg_planner.mpc.lead_v_filter.x = 14.0
+  emerg_lead = make_lead(status=True, d_rel=18.0, v_lead=14.0, a_lead=-1.5, radar=True, model_prob=0.99)
+  sm_off2 = make_sm(v_ego, desired_accel=0.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=emerg_lead)
+  sm_off2["carState"].aEgo = 0.0
+  sm_off2["controlsState"].longControlState = LongCtrlState.off
+  sm_off2["selfdriveState"].enabled = False
+  emerg_planner.update(sm_off2, toggles)
+
+  sm_on2 = make_sm(v_ego, desired_accel=0.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=emerg_lead)
+  sm_on2["carState"].aEgo = 0.0
+  sm_on2["controlsState"].longControlState = LongCtrlState.pid
+  sm_on2["selfdriveState"].enabled = True
+  emerg_planner.update(sm_on2, toggles)
+  assert emerg_planner.output_a_target < -2.0

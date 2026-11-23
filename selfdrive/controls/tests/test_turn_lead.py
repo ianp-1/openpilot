@@ -151,3 +151,10 @@ def test_twitch_guard_decays_after_pullaway_and_expires():
 
 def test_twitch_guard_does_not_arm_while_moving():
   assert update_twitch_guard(0.0, 1.0, False) == 0.0
+
+
+def test_turn_lead_is_suppressed_for_curvature_controller_but_allowed_for_torque():
+  assert not turn_lead_allowed("volkswagen", LateralControlMode.angle, car.CarParams.SteerControlType.curvatureDEPRECATED)
+  assert not turn_lead_allowed("volkswagen", LateralControlMode.torque, car.CarParams.SteerControlType.curvatureDEPRECATED)
+  assert turn_lead_allowed("volkswagen", LateralControlMode.torque, car.CarParams.SteerControlType.torque)
+  assert turn_lead_allowed("honda", LateralControlMode.torque, car.CarParams.SteerControlType.torque)

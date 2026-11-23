@@ -77,9 +77,15 @@ LC_MERGE_TTC_MIN = 4.0
 LC_MERGE_MIN_DIST = 30.0
 LC_MERGE_BRAKE_FLOOR = -0.4
 LC_MERGE_TTC_ACCEL = 6.0
-LC_MERGE_ACCEL_MIN_DIST = 30.0
-LC_MERGE_HEADROOM_MIN = 2.0
-LC_MERGE_ACCEL_BIAS = 0.55
+LC_MERGE_DIST_FULL = 38.0
+LC_MERGE_HEADROOM_START = 0.5
+LC_MERGE_HEADROOM_FULL = 2.5
+LC_MERGE_ACCEL_BIAS = 0.45
+LC_MERGE_MAX_UP_JERK = 1.0
+LC_MERGE_MAX_RELEASE_JERK = 1.2
+ENGAGE_POST_MPC_CAP_SLEW_TIME = 1.0
+ENGAGE_POST_MPC_CAP_MAX_DOWN_JERK = 3.0
+ENGAGE_POST_MPC_CAP_EMERGENCY_DECEL = -2.0
 
 A_CRUISE_MAX_BP = [0.0, 5., 10., 15., 20., 25., 40.]
 A_CRUISE_MAX_VALS = [1.125, 1.125, 1.125, 1.125, 1.25, 1.25, 1.5]
@@ -641,6 +647,8 @@ class LongitudinalPlanner:
     self.last_mpc_a_target = 0.0
     self.output_should_stop = False
     self.was_reset_state = False
+    self.lc_merge_boost_active = False
+    self.engage_cap_slew_remaining = 0.0
     self.far_follow_brake_slew_rate, self.far_follow_release_slew_rate = get_far_follow_output_slew_rates(CP)
     self.untracked_slow_lead_decel_scale = get_untracked_slow_lead_decel_scale(CP)
     self.tracked_lead_catchup_headway_margins = get_tracked_lead_catchup_headway_margins(CP)
@@ -2112,8 +2120,8 @@ class LongitudinalPlanner:
       return None
 
     direction = meta.laneChangeDirection
-    if (direction == LaneChangeDirection.left and CS.leftBlindspot) or \
-       (direction == LaneChangeDirection.right and CS.rightBlindspot):
+    if (direction == LaneChangeDirection.left and bool(getattr(CS, "leftBlindspot", False))) or \
+       (direction == LaneChangeDirection.right and bool(getattr(CS, "rightBlindspot", False))):
       return None
 
     # Only intervene when there's a lead we're merging around; leave curve/open-road braking alone.
@@ -2129,11 +2137,22 @@ class LongitudinalPlanner:
       return None
 
     floor = LC_MERGE_BRAKE_FLOOR
-    if (self.allow_throttle and ttc >= LC_MERGE_TTC_ACCEL and d_rel >= LC_MERGE_ACCEL_MIN_DIST and
-        np.isfinite(v_cruise) and (v_cruise - scene_v_ego) >= LC_MERGE_HEADROOM_MIN):
-      cruise_cap = max(0.0, (v_cruise - scene_v_ego) / max(action_t, self.dt))
-      floor = min(LC_MERGE_ACCEL_BIAS, cruise_cap)
+    if self.allow_throttle and np.isfinite(v_cruise) and (v_cruise - scene_v_ego) > LC_MERGE_HEADROOM_START:
+      ttc_w = float(np.clip((ttc - LC_MERGE_TTC_MIN) / max(LC_MERGE_TTC_ACCEL - LC_MERGE_TTC_MIN, 1e-3), 0.0, 1.0))
+      dist_w = float(np.clip((d_rel - LC_MERGE_MIN_DIST) / max(LC_MERGE_DIST_FULL - LC_MERGE_MIN_DIST, 1e-3), 0.0, 1.0))
+      headroom_w = float(np.clip((v_cruise - scene_v_ego - LC_MERGE_HEADROOM_START) /
+                                 max(LC_MERGE_HEADROOM_FULL - LC_MERGE_HEADROOM_START, 1e-3), 0.0, 1.0))
+      blend = ttc_w * dist_w * headroom_w
+      if blend > 0.0:
+        cruise_cap = max(0.0, (v_cruise - scene_v_ego) / max(action_t, self.dt))
+        pos_floor = min(LC_MERGE_ACCEL_BIAS * blend, cruise_cap)
+        floor = LC_MERGE_BRAKE_FLOOR + (pos_floor - LC_MERGE_BRAKE_FLOOR) * blend
     return floor
+
+  def _slew_engage_post_mpc_cap(self, cap: float, prev_target: float, panic_bypass: bool) -> float:
+    if self.engage_cap_slew_remaining <= 0.0 or panic_bypass or cap <= ENGAGE_POST_MPC_CAP_EMERGENCY_DECEL:
+      return float(cap)
+    return float(max(cap, prev_target - ENGAGE_POST_MPC_CAP_MAX_DOWN_JERK * self.dt))
 
   def update(self, sm, starpilot_toggles):
     if self.is_preap:
@@ -2488,6 +2507,7 @@ class LongitudinalPlanner:
     self.mpc.set_accel_limits(accel_limits_turns[0], accel_limits_turns[1])
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     if self.was_reset_state and not reset_state:
+      self.engage_cap_slew_remaining = ENGAGE_POST_MPC_CAP_SLEW_TIME
       v0 = float(self.v_desired_filter.x)
       a0 = float(self.a_desired)
       t_stop = max(0.0, -v0 / a0) if a0 < -1e-6 else float("inf")
@@ -2818,6 +2838,8 @@ class LongitudinalPlanner:
       self.vision_lead_approach_confirm_t = 0.0
     if close_lead_caps:
       close_lead_brake_cap = min(close_lead_caps)
+      if not reset_state:
+        close_lead_brake_cap = self._slew_engage_post_mpc_cap(close_lead_brake_cap, prev_output_a_target, panic_bypass)
       self.a_desired = min(self.a_desired, close_lead_brake_cap)
       output_a_target = min(output_a_target, close_lead_brake_cap)
 
@@ -3276,6 +3298,8 @@ class LongitudinalPlanner:
         sm['starpilotPlan'].tFollow,
       )
     if inside_gap_closing_cap is not None:
+      if not reset_state:
+        inside_gap_closing_cap = self._slew_engage_post_mpc_cap(inside_gap_closing_cap, prev_output_a_target, panic_bypass)
       self.a_desired = min(self.a_desired, inside_gap_closing_cap)
       output_a_target = min(output_a_target, inside_gap_closing_cap)
 
@@ -3330,17 +3354,35 @@ class LongitudinalPlanner:
       output_a_target = min(output_a_target, sienna_restop_cap)
       output_should_stop = True
 
+    lc_merge_blocked = bool(
+      output_should_stop or vision_low_speed_stop_active or depart_safety_veto or
+      getattr(sm['starpilotPlan'], 'forcingStop', False) or
+      getattr(sm['starpilotPlan'], 'redLight', False)
+    )
     lc_merge_floor = self.get_lane_change_merge_accel_floor(
       sm, starpilot_toggles, scene_v_ego, v_cruise, action_t,
-      blocked=bool(
-        output_should_stop or vision_low_speed_stop_active or depart_safety_veto or
-        getattr(sm['starpilotPlan'], 'forcingStop', False) or
-        getattr(sm['starpilotPlan'], 'redLight', False)
-      ),
+      blocked=lc_merge_blocked,
     )
-    if lc_merge_floor is not None:
-      output_a_target = float(min(max(output_a_target, lc_merge_floor), output_accel_max))
-      self.a_desired = max(self.a_desired, min(lc_merge_floor, output_accel_max))
+    raw_output_before_lc = output_a_target
+    safe_lc_release = (
+      self.lc_merge_boost_active and not reset_state and not lc_merge_blocked and
+      self.allow_throttle and not close_lead_caps and inside_gap_closing_cap is None and
+      prev_output_a_target > output_a_target and (
+        output_a_target >= 0.0 or
+        (not lead_one_active and self.mpc.source == 'cruise' and output_a_target >= -0.20)
+      )
+    )
+    lc_target = output_a_target
+    if lc_merge_floor is not None and lc_merge_floor > output_a_target:
+      lc_target = min(lc_merge_floor, max(output_a_target, prev_output_a_target + LC_MERGE_MAX_UP_JERK * self.dt))
+    if safe_lc_release:
+      lc_target = max(lc_target, prev_output_a_target - LC_MERGE_MAX_RELEASE_JERK * self.dt)
+    if lc_target > raw_output_before_lc + 1e-4:
+      output_a_target = float(min(lc_target, output_accel_max))
+      self.a_desired = max(self.a_desired, output_a_target)
+      self.lc_merge_boost_active = output_a_target > raw_output_before_lc + 1e-4
+    else:
+      self.lc_merge_boost_active = False
 
     # Force-decel is the driver-monitoring no-response path. Keep a small
     # braking floor until the vehicle is actually stopped; normal MPC tapering
@@ -3380,9 +3422,12 @@ class LongitudinalPlanner:
       self.output_a_target = reset_a_desired
       self.output_should_stop = False
       self.mpc.prev_a = np.full_like(self.mpc.prev_a, reset_a_desired)
+      self.lc_merge_boost_active = False
+      self.engage_cap_slew_remaining = 0.0
     else:
       self.output_a_target = output_a_target
       self.output_should_stop = bool(output_should_stop or vision_low_speed_stop_active)
+      self.engage_cap_slew_remaining = max(0.0, self.engage_cap_slew_remaining - self.dt)
     self.was_reset_state = bool(reset_state)
 
   def publish(self, sm, pm):

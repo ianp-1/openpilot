@@ -21,7 +21,8 @@ LaneChangeDirection = log.LaneChangeDirection
 # Ramps in gradually, snaps back to the normal gap when the safety gate trips.
 LANE_CHANGE_MIN_T_FOLLOW = 0.25            # hard floor on the reduced gap (s)
 LANE_CHANGE_GAP_RAMP_IN_RATE = 0.6         # seconds of headway per second, toward the shorter gap
-LANE_CHANGE_GAP_RAMP_OUT_RATE = 4.0        # seconds of headway per second, back to the normal gap
+LANE_CHANGE_GAP_RAMP_OUT_RATE = 0.5        # seconds of headway per second on clean lane-change exit
+LANE_CHANGE_GAP_RAMP_OUT_ABORT_RATE = 4.0  # fast snap-back when blindspot or lead braking trips
 LANE_CHANGE_ABORT_LEAD_BRAKE = 0.8         # lead decel that aborts the reduction (m/s^2)
 
 LANE_CHANGE_ACTIVE_STATES = (
@@ -50,6 +51,7 @@ class StarPilotFollowing:
 
     # Rate-limited lane-change follow distance (s). None until the first reduction.
     self.lane_change_t_follow = None
+    self.lane_change_gap_active = False
 
   def update(self, long_control_active, v_ego, sm, starpilot_toggles):
     personality = get_longitudinal_personality(sm)
@@ -111,7 +113,7 @@ class StarPilotFollowing:
     self.following_lead = self.starpilot_planner.tracking_lead and self.starpilot_planner.lead_one.dRel < (self.t_follow * 2) * v_ego
 
     self.disable_throttle = False
-    if self.starpilot_planner.tracking_lead and self.starpilot_planner.lead_one.status:
+    if not self.lane_change_gap_active and self.starpilot_planner.tracking_lead and self.starpilot_planner.lead_one.status:
       lead_distance = self.starpilot_planner.lead_one.dRel
       v_lead = self.starpilot_planner.lead_one.vLead
       closing_speed = max(0.0, v_ego - v_lead)
@@ -131,23 +133,34 @@ class StarPilotFollowing:
     # only ever shorten the current gap, never lengthen it.
     if not long_control_active:
       self.lane_change_t_follow = None
+      self.lane_change_gap_active = False
       return
 
     target = self.t_follow
+    lane_change_active = False
+    gap_safe = False
 
     if getattr(starpilot_toggles, "lane_change_close_gap", False):
       meta = sm["modelV2"].meta
       lane_change_active = meta.laneChangeState in LANE_CHANGE_ACTIVE_STATES
+      if lane_change_active:
+        gap_safe = self.lane_change_gap_safe(v_ego, sm, meta.laneChangeDirection, starpilot_toggles)
+        if gap_safe:
+          requested = float(np.clip(starpilot_toggles.lane_change_close_gap_seconds, LANE_CHANGE_MIN_T_FOLLOW, MAX_T_FOLLOW))
+          # Absolute cap: only apply when it is actually shorter than the normal gap.
+          target = min(self.t_follow, requested)
 
-      if lane_change_active and self.lane_change_gap_safe(v_ego, sm, meta.laneChangeDirection, starpilot_toggles):
-        requested = float(np.clip(starpilot_toggles.lane_change_close_gap_seconds, LANE_CHANGE_MIN_T_FOLLOW, MAX_T_FOLLOW))
-        # Absolute cap: only apply when it is actually shorter than the normal gap.
-        target = min(self.t_follow, requested)
+    self.lane_change_gap_active = bool(lane_change_active and gap_safe)
 
     if self.lane_change_t_follow is None:
       self.lane_change_t_follow = self.t_follow
 
-    rate = LANE_CHANGE_GAP_RAMP_IN_RATE if target < self.lane_change_t_follow else LANE_CHANGE_GAP_RAMP_OUT_RATE
+    if target < self.lane_change_t_follow:
+      rate = LANE_CHANGE_GAP_RAMP_IN_RATE
+    elif lane_change_active and not gap_safe:
+      rate = LANE_CHANGE_GAP_RAMP_OUT_ABORT_RATE
+    else:
+      rate = LANE_CHANGE_GAP_RAMP_OUT_RATE
     step = rate * DT_MDL
     self.lane_change_t_follow = float(np.clip(target,
                                               self.lane_change_t_follow - step,

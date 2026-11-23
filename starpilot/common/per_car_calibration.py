@@ -9,6 +9,7 @@ from pathlib import Path
 
 ID4_DEFAULT_CAMERA_OFFSET_M = 0.10
 LEGACY_ID4_CAMERA_OFFSET_M = 0.11
+ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG = -1.45
 LIVE_CALIBRATION_KEYS = (
   "CalibrationParams",
   "LiveParametersV2",
@@ -19,6 +20,10 @@ LIVE_CALIBRATION_KEYS = (
 
 def default_camera_offset_for_car(car_fingerprint: str) -> float:
   return ID4_DEFAULT_CAMERA_OFFSET_M if str(car_fingerprint).startswith("VOLKSWAGEN_ID4") else 0.0
+
+
+def default_mount_roll_offset_deg_for_car(car_fingerprint: str) -> float:
+  return ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG if str(car_fingerprint).startswith("VOLKSWAGEN_ID4") else 0.0
 
 
 def _default_bank_path(params) -> Path:
@@ -100,6 +105,27 @@ def _resolve_camera_offset(fp: str, saved_cam) -> float:
   return saved
 
 
+def _resolve_mount_roll_offset_deg(fp: str, saved_roll) -> float:
+  if saved_roll is not None:
+    try:
+      val = float(saved_roll)
+      if math.isfinite(val):
+        return val
+    except (TypeError, ValueError):
+      pass
+  return default_mount_roll_offset_deg_for_car(fp)
+
+
+def get_mount_roll_offset_deg(params, car_fingerprint: str, *, bank_path: Path | None = None) -> float:
+  fp = str(car_fingerprint or "")
+  if not fp:
+    return 0.0
+  resolved_path = bank_path if bank_path is not None else _default_bank_path(params)
+  bank = _load_bank(resolved_path)
+  entry = bank.get("cars", {}).get(fp) or {}
+  return _resolve_mount_roll_offset_deg(fp, entry.get("mount_roll_offset_deg"))
+
+
 def sync_per_car_calibration(params, prev_cp_bytes, curr_cp, *, bank_path: Path | None = None):
   """Bank and restore calibration/learner blobs + CameraOffset per carFingerprint."""
   curr_fp = _extract_fingerprint(curr_cp)
@@ -135,6 +161,7 @@ def sync_per_car_calibration(params, prev_cp_bytes, curr_cp, *, bank_path: Path 
       curr_entry["camera_offset"] = ID4_DEFAULT_CAMERA_OFFSET_M
     else:
       curr_entry["camera_offset"] = float(cur_cam)
+    curr_entry["mount_roll_offset_deg"] = _resolve_mount_roll_offset_deg(curr_fp, curr_entry.get("mount_roll_offset_deg"))
     _save_bank(resolved_path, bank)
     return prev_cp_bytes
 
@@ -151,6 +178,7 @@ def sync_per_car_calibration(params, prev_cp_bytes, curr_cp, *, bank_path: Path 
       prev_entry["camera_offset"] = ID4_DEFAULT_CAMERA_OFFSET_M
     else:
       prev_entry["camera_offset"] = float(cur_cam)
+  prev_entry["mount_roll_offset_deg"] = _resolve_mount_roll_offset_deg(prev_fp, prev_entry.get("mount_roll_offset_deg"))
 
   curr_entry = cars.setdefault(curr_fp, {"blobs": {}, "camera_offset": None})
   curr_blobs = curr_entry.get("blobs") or {}
@@ -175,6 +203,7 @@ def sync_per_car_calibration(params, prev_cp_bytes, curr_cp, *, bank_path: Path 
 
   target_cam = _resolve_camera_offset(curr_fp, curr_entry.get("camera_offset"))
   curr_entry["camera_offset"] = float(target_cam)
+  curr_entry["mount_roll_offset_deg"] = _resolve_mount_roll_offset_deg(curr_fp, curr_entry.get("mount_roll_offset_deg"))
   params.put_float("CameraOffset", float(target_cam))
   _save_bank(resolved_path, bank)
   return effective_prev_cp

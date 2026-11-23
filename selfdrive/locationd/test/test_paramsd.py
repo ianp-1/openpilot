@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from cereal import messaging
-from openpilot.selfdrive.locationd.paramsd import resolve_vehicle_model_params, retrieve_initial_vehicle_params, migrate_cached_vehicle_params_if_needed
+from openpilot.selfdrive.locationd.paramsd import VehicleParamsLearner, resolve_vehicle_model_params, retrieve_initial_vehicle_params, migrate_cached_vehicle_params_if_needed
 from openpilot.selfdrive.locationd.models.car_kf import CarKalman
 from openpilot.selfdrive.locationd.test.test_locationd_scenarios import TEST_ROUTE
 from openpilot.selfdrive.test.process_replay.migration import migrate, migrate_carParams
@@ -90,3 +90,23 @@ class TestParamsd:
     migrate_cached_vehicle_params_if_needed(params)
     assert params.get("LiveParameters") is None
     assert params.get("LiveParametersV2") is None
+
+  def test_mount_roll_offset_subtracts_static_roll_without_affecting_zero_default(self):
+    lr = migrate(LogReader(TEST_ROUTE), [migrate_carParams])
+    CP = next(m for m in lr if m.which() == "carParams").carParams
+
+    pose_msg = messaging.new_message("livePose")
+    pose_msg.livePose.orientationNED.x = float(np.radians(-1.45))
+    pose_msg.livePose.orientationNED.xStd = float(np.radians(0.1))
+    pose_msg.livePose.angularVelocityDevice.valid = True
+    pose_msg.livePose.sensorsOK = True
+
+    learner_default = VehicleParamsLearner(CP, CP.steerRatio, 1.0, 0.0)
+    learner_default.handle_log(1.0, "livePose", pose_msg.livePose)
+    learner_default.handle_log(1.05, "livePose", pose_msg.livePose)
+    np.testing.assert_allclose(learner_default.observed_roll, np.radians(-1.45), atol=1e-6)
+
+    learner_id4 = VehicleParamsLearner(CP, CP.steerRatio, 1.0, 0.0, mount_roll_offset_rad=np.radians(-1.45))
+    learner_id4.handle_log(1.0, "livePose", pose_msg.livePose)
+    learner_id4.handle_log(1.05, "livePose", pose_msg.livePose)
+    np.testing.assert_allclose(learner_id4.observed_roll, 0.0, atol=1e-6)
