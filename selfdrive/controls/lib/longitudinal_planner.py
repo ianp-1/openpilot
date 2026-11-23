@@ -826,12 +826,13 @@ class LongitudinalPlanner:
     return float(min(max(match_term, stop_term), LEAD_GEOMETRY_MAX_REQUIRED_ACCEL))
 
   def get_close_lead_brake_cap(self, lead, v_ego, accel_min):
-    if lead is None or not lead.status:
+    if lead is None or not lead.status or float(v_ego) <= 0.1:
       return None
 
     lead_brake = max(0.0, -float(lead.aLeadK))
     reaction_t = max(self.longitudinal_actuator_delay, self.dt)
-    closing_speed = max(0.0, v_ego - lead.vLead)
+    lead_speed = max(float(lead.vLead), 0.0)
+    closing_speed = max(0.0, float(v_ego) - lead_speed)
     projected_closing_speed = closing_speed + lead_brake * reaction_t
     if projected_closing_speed < 0.1 and lead_brake < 0.5:
       return None
@@ -2149,8 +2150,8 @@ class LongitudinalPlanner:
         floor = LC_MERGE_BRAKE_FLOOR + (pos_floor - LC_MERGE_BRAKE_FLOOR) * blend
     return floor
 
-  def _slew_engage_post_mpc_cap(self, cap: float, prev_target: float, panic_bypass: bool) -> float:
-    if self.engage_cap_slew_remaining <= 0.0 or panic_bypass or cap <= ENGAGE_POST_MPC_CAP_EMERGENCY_DECEL:
+  def _slew_engage_post_mpc_cap(self, cap: float, prev_target: float) -> float:
+    if self.engage_cap_slew_remaining <= 0.0 or cap <= ENGAGE_POST_MPC_CAP_EMERGENCY_DECEL:
       return float(cap)
     return float(max(cap, prev_target - ENGAGE_POST_MPC_CAP_MAX_DOWN_JERK * self.dt))
 
@@ -2839,7 +2840,7 @@ class LongitudinalPlanner:
     if close_lead_caps:
       close_lead_brake_cap = min(close_lead_caps)
       if not reset_state:
-        close_lead_brake_cap = self._slew_engage_post_mpc_cap(close_lead_brake_cap, prev_output_a_target, panic_bypass)
+        close_lead_brake_cap = self._slew_engage_post_mpc_cap(close_lead_brake_cap, prev_output_a_target)
       self.a_desired = min(self.a_desired, close_lead_brake_cap)
       output_a_target = min(output_a_target, close_lead_brake_cap)
 
@@ -3299,7 +3300,7 @@ class LongitudinalPlanner:
       )
     if inside_gap_closing_cap is not None:
       if not reset_state:
-        inside_gap_closing_cap = self._slew_engage_post_mpc_cap(inside_gap_closing_cap, prev_output_a_target, panic_bypass)
+        inside_gap_closing_cap = self._slew_engage_post_mpc_cap(inside_gap_closing_cap, prev_output_a_target)
       self.a_desired = min(self.a_desired, inside_gap_closing_cap)
       output_a_target = min(output_a_target, inside_gap_closing_cap)
 

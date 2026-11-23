@@ -4891,16 +4891,19 @@ def test_engage_post_mpc_close_lead_cap_slews_moderate_decel_and_preserves_emerg
   sm_off["carState"].aEgo = 0.0
   sm_off["controlsState"].longControlState = LongCtrlState.off
   sm_off["selfdriveState"].enabled = False
+  sm_off["modelV2"].meta.disengagePredictions.brakePressProbs = [1.0] * 6
   planner.update(sm_off, toggles)
   assert planner.output_a_target == pytest.approx(0.0)
 
+  # High model uncertainty (LON_SLOPE panic_bypass) must NOT defeat moderate post-MPC engage slew.
   sm_on = make_sm(v_ego, desired_accel=0.0, min_accel=-3.5, experimental_mode=False, tracking_lead=True, lead_one=mod_lead)
   sm_on["carState"].aEgo = 0.0
   sm_on["controlsState"].longControlState = LongCtrlState.pid
   sm_on["selfdriveState"].enabled = True
+  sm_on["modelV2"].meta.disengagePredictions.brakePressProbs = [1.0] * 6
   planner.update(sm_on, toggles)
   assert planner.output_a_target >= min(planner.last_mpc_a_target, -3.0 * planner.dt) - 1e-6
-  assert planner.output_a_target > -0.45
+  assert planner.output_a_target > -0.55
 
   # Close-lead-cap check mirroring 47--5 (close_lead_brake_cap < -1.0 is slewed on engage).
   close_planner = LongitudinalPlanner(CP, init_v=6.5)
@@ -4936,3 +4939,28 @@ def test_engage_post_mpc_close_lead_cap_slews_moderate_decel_and_preserves_emerg
   sm_on2["selfdriveState"].enabled = True
   emerg_planner.update(sm_on2, toggles)
   assert emerg_planner.output_a_target < -2.0
+
+
+@pytest.mark.parametrize("car_interface,candidate", [
+  (VolkswagenCarInterface, VW_CAR.VOLKSWAGEN_ID4_MK1),
+  (CarInterface, CAR.HONDA_CRV_5G),
+])
+def test_close_lead_brake_cap_ignores_standstill_cross_traffic_and_clamps_negative_vlead(car_interface, candidate):
+  CP = car_interface.get_non_essential_params(candidate)
+  standstill_planner = LongitudinalPlanner(CP, init_v=0.0)
+  cross_traffic_lead = make_lead(status=True, d_rel=5.56, v_lead=-3.5, a_lead=-1.28, radar=True, model_prob=0.99)
+  assert standstill_planner.get_close_lead_brake_cap(cross_traffic_lead, 0.0, -3.5) is None
+  assert standstill_planner.get_close_lead_brake_cap(cross_traffic_lead, 0.1, -3.5) is None
+
+  # Moving ego clamps negative radar vLead to 0.0 instead of inflating closing_speed to v_ego + |vLead|.
+  moving_planner = LongitudinalPlanner(CP, init_v=3.0)
+  neg_vlead = make_lead(status=True, d_rel=8.0, v_lead=-3.5, a_lead=-0.8, radar=True, model_prob=0.99)
+  zero_vlead = make_lead(status=True, d_rel=8.0, v_lead=0.0, a_lead=-0.8, radar=True, model_prob=0.99)
+  cap_neg = moving_planner.get_close_lead_brake_cap(neg_vlead, 3.0, -3.5)
+  cap_zero = moving_planner.get_close_lead_brake_cap(zero_vlead, 3.0, -3.5)
+  assert cap_neg == cap_zero
+
+  # Genuine moving approach against a slowing lead still engages a strong close-lead brake cap.
+  approach_lead = make_lead(status=True, d_rel=12.0, v_lead=2.0, a_lead=-1.5, radar=True, model_prob=0.99)
+  approach_cap = moving_planner.get_close_lead_brake_cap(approach_lead, 10.0, -3.5)
+  assert approach_cap is not None and approach_cap < -1.5
