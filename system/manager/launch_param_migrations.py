@@ -99,13 +99,13 @@ CRV_ID4_SEED_FLOATS = {
 }
 
 CRV_LEARNER_SEED_FLOATS = {
-  "HondaGasFactorParams": 0.8000000347587553,
-  "HondaWindFactorParams": 1.2499985214255849,
+  "HondaGasFactorParams": 1.0,
+  "HondaWindFactorParams": 1.0,
 }
 
 CRV_LEARNER_META = {
   "car_fingerprint": "HONDA_CRV_5G",
-  "learn_version": 2,
+  "learn_version": 3,
 }
 
 CRV_ID4_SSH_GITHUB_USER = "ianp-1"

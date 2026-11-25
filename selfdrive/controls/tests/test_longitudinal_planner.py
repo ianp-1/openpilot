@@ -388,7 +388,7 @@ def test_crv_far_follow_output_slew_damps_nonurgent_lead_transition():
 
   brake_rate, release_rate = get_far_follow_output_slew_rates(CP)
   assert brake_rate == pytest.approx(1.5)
-  assert release_rate == pytest.approx(1.0)
+  assert release_rate == pytest.approx(1.5)
 
   initial = planner.get_vehicle_far_follow_slew_target(
     v_ego, prev_target=0.0, target=-0.6, output_should_stop=False, panic_bypass=False,
@@ -4964,3 +4964,51 @@ def test_close_lead_brake_cap_ignores_standstill_cross_traffic_and_clamps_negati
   approach_lead = make_lead(status=True, d_rel=12.0, v_lead=2.0, a_lead=-1.5, radar=True, model_prob=0.99)
   approach_cap = moving_planner.get_close_lead_brake_cap(approach_lead, 10.0, -3.5)
   assert approach_cap is not None and approach_cap < -1.5
+
+
+def test_negative_max_a_does_not_create_receding_cruise_obstacle():
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
+  mpc = LongitudinalMpc()
+  v_ego = 12.0
+  mpc.set_weights(prev_accel_constraint=True, v_ego=v_ego)
+  mpc.set_cur_state(v_ego, 0.0)
+  mpc.set_accel_limits(-3.5, -0.3)
+  x = np.zeros_like(T_IDXS_MPC)
+  v = np.full_like(T_IDXS_MPC, v_ego)
+  a = np.zeros_like(T_IDXS_MPC)
+  j = np.zeros_like(T_IDXS_MPC)
+  rstate = log.RadarState.new_message()
+  for _ in range(5):
+    mpc.update(rstate, v_cruise=15.5, x=x, v=v, a=a, j=j, danger_factor=1.0, t_follow=1.2, tracking_lead=False)
+  assert mpc.source == "cruise"
+  assert float(np.min(mpc.a_solution[:5])) > -0.10
+  assert float(mpc.v_solution[4]) > 11.90
+
+
+def test_crv_planner_jerk_and_close_lead_recovery_unstuck():
+  from openpilot.selfdrive.controls.lib.longitudinal_vehicle_tunes import get_lead_follow_jerk_scale
+  CP = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+  planner = LongitudinalPlanner(CP, init_v=14.0)
+  assert get_lead_follow_jerk_scale(CP) == pytest.approx(1.0)
+  assert planner.far_follow_release_slew_rate == pytest.approx(1.5)
+
+  toggles = make_toggles("v15")
+  sm_init = make_sm(14.0, desired_accel=0.0, min_accel=-3.5, experimental_mode=False, tracking_lead=False,
+                    lead_one=make_lead(status=False))
+  sm_init["carState"].vCruise = 16.0 * 3.6
+  sm_init["starpilotPlan"].vCruise = 16.0
+  planner.mpc.lead_v_filter.x = 25.0
+  for _ in range(3):
+    planner.update(sm_init, toggles)
+  assert planner.mpc.source == "cruise"
+
+  # Inject transient close-lead deep brake state, then run clear cruise recovery
+  sm_run = make_sm(13.0, desired_accel=0.1, min_accel=-3.5, experimental_mode=False, tracking_lead=False,
+                   lead_one=make_lead(status=False))
+  sm_run["carState"].vCruise = 16.0 * 3.6
+  sm_run["starpilotPlan"].vCruise = 16.0
+  planner.a_desired = -1.2
+  for _ in range(2):
+    planner.update(sm_run, toggles)
+  assert planner.mpc.source == "cruise"
+  assert planner.a_desired > -0.95

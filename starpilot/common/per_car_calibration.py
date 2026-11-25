@@ -10,6 +10,7 @@ from pathlib import Path
 ID4_DEFAULT_CAMERA_OFFSET_M = 0.10
 LEGACY_ID4_CAMERA_OFFSET_M = 0.11
 ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG = -1.45
+CRV_DEFAULT_MOUNT_ROLL_OFFSET_DEG = 0.8
 LIVE_CALIBRATION_KEYS = (
   "CalibrationParams",
   "LiveParametersV2",
@@ -23,7 +24,12 @@ def default_camera_offset_for_car(car_fingerprint: str) -> float:
 
 
 def default_mount_roll_offset_deg_for_car(car_fingerprint: str) -> float:
-  return ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG if str(car_fingerprint).startswith("VOLKSWAGEN_ID4") else 0.0
+  fp = str(car_fingerprint)
+  if fp.startswith("VOLKSWAGEN_ID4"):
+    return ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG
+  if fp == "HONDA_CRV_5G":
+    return CRV_DEFAULT_MOUNT_ROLL_OFFSET_DEG
+  return 0.0
 
 
 def _default_bank_path(params) -> Path:
@@ -110,6 +116,8 @@ def _resolve_mount_roll_offset_deg(fp: str, saved_roll) -> float:
     try:
       val = float(saved_roll)
       if math.isfinite(val):
+        if str(fp) == "HONDA_CRV_5G" and math.isclose(val, 0.0, abs_tol=1e-4):
+          return CRV_DEFAULT_MOUNT_ROLL_OFFSET_DEG
         return val
     except (TypeError, ValueError):
       pass

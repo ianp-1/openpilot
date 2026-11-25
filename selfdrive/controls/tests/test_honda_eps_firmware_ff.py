@@ -973,3 +973,24 @@ def test_every_calibration_has_a_rack_map_and_the_controller_requires_one(monkey
   assert honda_eps.eps_firmware_calibration(CP, _Params()) is eps_cal.CLARITY_TRW_A020
   CP.flags = int(CP.flags) & ~int(HondaFlags.VGR_CLARITY_TRW_A020)   # no firmware A table: no geometry, so LatControlPID
   assert honda_eps.eps_firmware_calibration(CP, _Params()) is None
+
+
+def test_crv_a040_saturated_flag_triggers_at_output_ceiling(monkeypatch):
+  monkeypatch.setattr(honda_eps, "Params", lambda: _Params({"HondaEpsController": "1"}))
+  CP = _params(b'39990-TLA,A040\x00\x00', CAR.HONDA_CRV_5G)
+  lac = honda_eps.LatControlHondaEps(CP, None, DT_CTRL)
+  VM = VehicleModel(CP)
+  CS = car.CarState.new_message(vEgo=15.0, steeringAngleDeg=0.0)
+  params = log.LiveParametersData.new_message(steerRatio=16.0, stiffnessFactor=1.0)
+  max_out = 0.0
+  saturated_seen = False
+  ceiling = eps_cal.CRV_TLA_A040.output_ceiling()
+  for _ in range(300):
+    out, _, pid_log = lac.update(True, CS, VM, params, False, 0.08, False, 0.2, None, None, SimpleNamespace())
+    max_out = max(max_out, abs(out))
+    assert abs(out) <= ceiling + 1e-5
+    if pid_log.saturated:
+      assert abs(out) >= ceiling - 1e-3
+      saturated_seen = True
+  assert max_out >= ceiling - 1e-3
+  assert saturated_seen is True

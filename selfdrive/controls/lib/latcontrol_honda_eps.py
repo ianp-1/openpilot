@@ -259,7 +259,8 @@ class LatControlHondaEps(LatControl):
       pid_log.i = float(self.core.pid.i)
       pid_log.f = float(self.core.pid.f)
       pid_log.output = output
-      pid_log.saturated = bool(self._check_saturation(self.steer_max - abs(output) < 1e-3, CS, steer_limited_by_safety,
+      steer_ceiling = min(self.steer_max, self.core.ff.cal.output_ceiling())
+      pid_log.saturated = bool(self._check_saturation(steer_ceiling - abs(output) < 1e-3, CS, steer_limited_by_safety,
                                                       curvature_limited))
 
     ff = self.core.ff

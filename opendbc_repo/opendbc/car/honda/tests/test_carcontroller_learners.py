@@ -505,7 +505,7 @@ class TestAntiWindupShadowParity(unittest.TestCase):
                                      gas_pedal_force=0.8, wind_brake_ms2=0.1))
     pre_brake = learner.raw_windfactor
 
-    # Enter braking: gas_pedal_force <= 0 activates the shadow
+    # Enter braking: gas_pedal_force <= 0 activates the shadow without upward ratchet
     for _ in range(100):
       learner.update(**_steady_kwargs(accel_cmd=0.0, a_ego=0.5,
                                      gas_pedal_force=0.0, brake_pressed=True))
@@ -513,13 +513,40 @@ class TestAntiWindupShadowParity(unittest.TestCase):
 
     self.assertGreaterEqual(post_brake, pre_brake - 1e-6,
                             "windfactor must not fall below pre-brake shadow")
+    self.assertAlmostEqual(post_brake, pre_brake, places=6,
+                           msg="windfactor must not ratchet upward during braking")
+
+    # Even with positive drag error while braking, shadow holds without ratcheting up
+    for _ in range(50):
+      learner.update(**_steady_kwargs(accel_cmd=-0.2, a_ego=-0.8, wind_brake_ms2=0.5,
+                                     gas_pedal_force=0.0, brake_pressed=True))
+    self.assertAlmostEqual(learner.raw_windfactor, pre_brake, places=6)
+
+  def test_windfactor_frozen_when_coasting_without_gas(self):
+    """raw_windfactor must stay frozen while coasting (gas_pedal_force <= 0.0)."""
+    learner = _make_learner(init_wind=1.0)
+    for _ in range(_LAG_TICKS + 100):
+      learner.update(**_steady_kwargs(accel_cmd=0.4, a_ego=0.2, wind_brake_ms2=0.5,
+                                     gas_pedal_force=0.0, brake_pressed=False))
+    self.assertAlmostEqual(learner.raw_windfactor, 1.0, places=6)
+
+  def test_crv_5g_learn_speed(self):
+    """HONDA_CRV_5G uses slow learn_speed (strictly slower gasfactor update than default)."""
+    crv = _make_learner(fingerprint="HONDA_CRV_5G")
+    default_car = _make_learner(fingerprint="HONDA_DEFAULT_TEST")
+    _tick_n(crv, _LAG_TICKS + 80, accel_cmd=1.2, a_ego=0.5, gas_pedal_force=0.6)
+    _tick_n(default_car, _LAG_TICKS + 80, accel_cmd=1.2, a_ego=0.5, gas_pedal_force=0.6)
+    crv_delta = abs(crv.raw_gasfactor - 1.0)
+    default_delta = abs(default_car.raw_gasfactor - 1.0)
+    self.assertGreater(default_delta, 0.0)
+    self.assertLess(crv_delta, default_delta * 0.5)
 
 
 class TestLearnVersion(unittest.TestCase):
-  """LEARN_VERSION must be 2 (G1 changed semantics)."""
+  """LEARN_VERSION must be 3 (Wave 4 coast-gating and non-ratchet semantics)."""
 
   def test_version(self):
-    self.assertEqual(LEARN_VERSION, 2)
+    self.assertEqual(LEARN_VERSION, 3)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from opendbc.car.honda.carcontroller import (
   BOSCH_BRAKE_FORCE_RELEASE,
   CarController,
   get_eps_modified_steering_pressed,
+  get_honda_bosch_gas_lookup,
   get_honda_bosch_wind_brake_mps2,
   update_honda_bosch_braking,
   update_honda_bosch_live_learning,
@@ -487,9 +488,79 @@ class TestHondaFingerprint:
 
     hrv3g_cp = CarInterface.get_params(CAR.HONDA_HRV_3G, gen_empty_fingerprint(), [], True, False, False, toggles)
     accord_cp = CarInterface.get_params(CAR.HONDA_ACCORD, gen_empty_fingerprint(), [], True, False, False, toggles)
+    crv_cp = CarInterface.get_params(CAR.HONDA_CRV_5G, gen_empty_fingerprint(), [], True, False, False, toggles)
 
     assert hrv3g_cp.longitudinalActuatorDelay == pytest.approx(0.4)
     assert accord_cp.longitudinalActuatorDelay == pytest.approx(0.5)
+    assert crv_cp.longitudinalActuatorDelay == pytest.approx(0.35)
+    assert list(crv_cp.longitudinalTuning.kpBP) == pytest.approx([0.0, 35.0])
+    assert list(crv_cp.longitudinalTuning.kpV) == pytest.approx([0.25, 0.15])
+    assert list(crv_cp.longitudinalTuning.kiBP) == pytest.approx([0.0, 35.0])
+    assert list(crv_cp.longitudinalTuning.kiV) == pytest.approx([0.06, 0.04])
+
+  def test_honda_crv_5g_wheel_speed_factor_applied_to_v_wheel(self):
+    CP = CarInterface.get_non_essential_params(CAR.HONDA_CRV_5G)
+    CI = CarInterface(CP, custom.StarPilotCarParams.new_message())
+    cp_pt = CI.can_parsers[Bus.pt]
+    cp_pt.vl["WHEEL_SPEEDS"] = {"WHEEL_SPEED_FL": 100.0, "WHEEL_SPEED_FR": 100.0, "WHEEL_SPEED_RL": 100.0, "WHEEL_SPEED_RR": 100.0}
+    cp_pt.vl["ENGINE_DATA"]["XMISSION_SPEED"] = 100.0
+    ret, _ = CI.CS.update(CI.can_parsers, get_test_starpilot_toggles())
+    assert CP.wheelSpeedFactor == pytest.approx(1.025)
+    assert ret.vEgoRaw == pytest.approx(100.0 * CV.KPH_TO_MS * 1.025)
+
+  def test_honda_crv_5g_gas_lookup_and_downhill_brake_release(self):
+    bp_low, v_low = get_honda_bosch_gas_lookup(CAR.HONDA_CRV_5G, 10.0, [0.0, 2.0], [0.0, 1600.0])
+    bp_hi, v_hi = get_honda_bosch_gas_lookup(CAR.HONDA_CRV_5G, 28.0, [0.0, 2.0], [0.0, 1600.0])
+    assert bp_low == pytest.approx([-0.20, 2.0]) and v_low == pytest.approx([0.0, 950.0])
+    assert bp_hi == pytest.approx([-0.20, 2.0]) and v_hi == pytest.approx([0.0, 1350.0])
+    assert get_honda_bosch_gas_lookup(CAR.HONDA_ACCORD, 28.0, [0.0, 2.0], [0.0, 1600.0]) == ([0.0, 2.0], [0.0, 1600.0])
+
+    # Releases latched brake when planner requests positive accel (unless stopping)
+    assert update_honda_bosch_braking(True, -0.05, False, True, accel=0.06) is False
+    assert update_honda_bosch_braking(True, -0.05, False, True, accel=0.04) is True
+    assert update_honda_bosch_braking(True, -0.05, True, True, accel=0.20) is True
+
+    # Negative min_gas_accel permits idle/anti-deadband gas above -0.20 when not braking
+    class FakePacker:
+      @staticmethod
+      def make_can_msg(name, bus, values):
+        return name, bus, values
+    cmds = create_acc_commands(FakePacker(), SimpleNamespace(pt=1), True, True, -0.05, 80, 0,
+                               CAR.HONDA_CRV_5G, -0.10, False, min_gas_accel=-0.20)
+    assert cmds[-1][2]["GAS_COMMAND"] == 80
+    assert cmds[-1][2]["BRAKE_REQUEST"] == 0
+
+  def test_honda_crv_5g_imperial_hud_cruise_speed_avoids_plus_two_jumps(self, monkeypatch):
+    import math
+    CP = CarInterface.get_params(CAR.HONDA_CRV_5G, gen_empty_fingerprint(), [], True, False, False, get_test_toggles())
+    controller = CarController(DBC[CP.carFingerprint], CP)
+    captured = {}
+
+    def fake_acc_hud(packer, bus, cp, enabled, pcm_speed, pcm_accel, hud_control, hud_v_cruise, is_metric, acc_hud):
+      captured["hud_v_cruise"] = hud_v_cruise
+      return ("ACC_HUD", bus, {})
+
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_steering_control", lambda *a, **k: ("STEER", 0, {}))
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_acc_commands", lambda *a, **k: [])
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_acc_hud", fake_acc_hud)
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_lkas_hud", lambda *a, **k: [])
+    monkeypatch.setattr("opendbc.car.honda.carcontroller.hondacan.create_radar_hud", lambda *a, **k: ("RADAR_HUD", 0, {}))
+
+    CC = structs.CarControl.new_message()
+    CC.enabled = True
+    CC.hudControl.speedVisible = True
+    CS = SimpleNamespace(
+      out=SimpleNamespace(vEgo=25.0, aEgo=0.0, steeringPressed=False, gasPressed=False, brakePressed=False,
+                          cruiseState=SimpleNamespace(available=True)),
+      is_metric=False, dynamic_v_cruise_units=False, v_cruise_factor=CV.KPH_TO_MS,
+      acc_hud={}, lkas_hud={},
+    )
+    for target_mph in range(20, 91):
+      controller.frame = 0
+      # Even with arbitrary KPH off-grid init (e.g. 76.43 -> 76.43 + n*0.994), round() tracks target_mph
+      CC.hudControl.setSpeed = float(target_mph) * CV.MPH_TO_MS
+      controller.update(CC.as_reader(), CS, 0, get_test_toggles())
+      assert math.floor(captured["hud_v_cruise"] * 0.621371) == target_mph
 
 
 class TestHondaSteeringCommandFidelity:

@@ -167,6 +167,9 @@ BOSCH_A_DIRECT_VREL_MAX_UNCERTAINTY_RAW = 511
 # coasts a more-conservative velocity, so it fails safe.
 BOSCH_A_VREL_RATE_CHECK_MIN_SAMPLES = 4
 BOSCH_A_VREL_RATE_CHECK_MIN_SPAN_S = 0.25
+# Clear unmatured frozen pre-dropout history only after a sustained (>0.5 s) stall
+# so brief rejected reset glitches (<0.3 s) cannot rebase, while stale tracks recover.
+BOSCH_A_FROZEN_SAMPLE_CLEAR_S = 0.5
 BOSCH_A_VREL_RATE_CHECK_MAX_DISAGREEMENT_MPS = 3.0
 
 # Measurement-authority policy. These are replay-derived safety/tuning gates, not recovered Bosch
@@ -484,7 +487,10 @@ class RadarInterface(RadarInterfaceBase):
       if track.prev_frame_idx is not None and track.prev_life is not None:
         frame_delta = (idx0 - track.prev_frame_idx) & 0xF
         life_delta = (life - track.prev_life) & 0xFFF
-        same_incarnation = life_delta == 2 * frame_delta
+        same_incarnation = (
+          life_delta == 2 * frame_delta or
+          (frame_delta > 0 and life == 0xFFE and (track.prev_life == 0xFFE or track.prev_life + 2 * frame_delta >= 0xFFE))
+        )
 
       if not same_incarnation:
         # The CAN identity remains the externally-visible key, but a lifecycle discontinuity starts a
@@ -574,6 +580,8 @@ class RadarInterface(RadarInterfaceBase):
           point.measured = False
         else:
           self.pts.pop(track_id, None)
+          if previous_sample is not None and now_s - previous_sample[0] > BOSCH_A_FROZEN_SAMPLE_CLEAR_S:
+            track.samples.clear()
         track.prev_frame_idx = idx0
         track.prev_life = life
         track.last_seen_nanos = now
@@ -628,6 +636,8 @@ class RadarInterface(RadarInterfaceBase):
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
           self.pts.pop(track_id, None)
+        if track_id not in self.pts and previous_sample is not None and now_s - previous_sample[0] > BOSCH_A_FROZEN_SAMPLE_CLEAR_S:
+          track.samples.clear()
 
         # Do not let a coast-only range observation become a future derivative baseline.
         track.prev_frame_idx = idx0
@@ -674,6 +684,8 @@ class RadarInterface(RadarInterfaceBase):
           # No trusted velocity was ever established for this identity, so there is nothing to
           # coast and no way to publish a defensible vRel.
           self.pts.pop(track_id, None)
+        if track_id not in self.pts and previous_sample is not None and now_s - previous_sample[0] > BOSCH_A_FROZEN_SAMPLE_CLEAR_S:
+          track.samples.clear()
 
         # Do not let a coast-only range observation become a future derivative baseline.
         track.prev_frame_idx = idx0

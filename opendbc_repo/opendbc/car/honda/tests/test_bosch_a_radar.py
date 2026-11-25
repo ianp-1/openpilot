@@ -1280,3 +1280,34 @@ def test_bosch_a_gate_open_to_other_bosch_a_platforms(car):
 def test_bosch_a_gate_stays_closed_for_non_bosch_a_platforms(car):
   cp = _CLOSED_BOSCH_A_CPS[car]
   assert cp.radarUnavailable is True
+
+
+def test_bosch_a_lifecycle_saturation_at_0xffe_preserves_incarnation():
+  ri = make_radar_interface()
+  ri.update(sweep(0, 0, 0x7, 1000, 1024, 0xFFD, 0, with_aux=True, direct_vrel_raw=864, direct_vrel_uncertainty_raw=0))
+  rr = ri.update(sweep(0, 1, 0x7, 1001, 1024, 0xFFE, 70_000_000, with_aux=True, direct_vrel_raw=864, direct_vrel_uncertainty_raw=0))
+  assert len(rr.points) == 1
+  for step in range(2, 6):
+    rr = ri.update(sweep(0, step & 0xF, 0x7, 1000 + step, 1024, 0xFFE, step * 70_000_000,
+                         with_aux=True, direct_vrel_raw=864, direct_vrel_uncertainty_raw=0))
+    assert len(rr.points) == 1
+    assert rr.points[0].trackId == 1
+
+
+def test_bosch_a_stale_frozen_samples_clear_so_track_recovers_after_dropout():
+  ri = make_radar_interface()
+  # Birth at 2000 (~120 m)
+  ri.update(sweep(0, 0, 0x7, 2000, 1024, 1, 0))
+  # High uncertainty U10 coast keeps track unmatured (> 0.5 s frozen clear); track moves much closer to 800 (~48 m)
+  t_ns = 600_000_000
+  rr = ri.update(sweep(0, 1, 0x7, 800, 1024, 3, t_ns, with_aux=True,
+                       direct_vrel_raw=800, direct_vrel_uncertainty_raw=600))
+  assert len(rr.points) == 0
+  assert len(ri._tracks[1].samples) == 0
+  # Next two coherent clean sweeps at ~48 m re-seed and mature cleanly instead of failing range innovation forever
+  ri.update(sweep(0, 2, 0x7, 800, 1024, 5, t_ns + 70_000_000, with_aux=True,
+                  direct_vrel_raw=864, direct_vrel_uncertainty_raw=0))
+  rr = ri.update(sweep(0, 3, 0x7, 800, 1024, 7, t_ns + 140_000_000, with_aux=True,
+                       direct_vrel_raw=864, direct_vrel_uncertainty_raw=0))
+  assert len(rr.points) == 1
+  assert rr.points[0].dRel == pytest.approx(BOSCH_A_RANGE_SCALE_M * 800 + BOSCH_A_RANGE_OFFSET_M)

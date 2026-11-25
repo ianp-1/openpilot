@@ -77,9 +77,10 @@ def create_brake_command(packer, CAN, apply_brake, pump_on, pcm_override, pcm_ca
   return packer.make_can_msg("BRAKE_COMMAND", CAN.pt, values)
 
 
-def create_acc_commands(packer, CAN, enabled, active, accel, gas, stopping_counter, car_fingerprint, gas_force, braking):
+def create_acc_commands(packer, CAN, enabled, active, accel, gas, stopping_counter, car_fingerprint, gas_force, braking,
+                        min_gas_accel: float | None = None):
   commands = []
-  min_gas_accel = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+  min_gas_accel = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0] if min_gas_accel is None else float(min_gas_accel)
 
   control_on = 5 if enabled else 0
   # Gas and brake mode are both selected from road-load-adjusted gas_force in

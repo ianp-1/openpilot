@@ -2843,6 +2843,14 @@ class LongitudinalPlanner:
         close_lead_brake_cap = self._slew_engage_post_mpc_cap(close_lead_brake_cap, prev_output_a_target)
       self.a_desired = min(self.a_desired, close_lead_brake_cap)
       output_a_target = min(output_a_target, close_lead_brake_cap)
+    elif (
+      not reset_state and
+      self.mpc.source == 'cruise' and
+      not output_should_stop and
+      not vision_low_speed_stop_active and
+      self.a_desired < min(output_a_target - 0.25, -0.35)
+    ):
+      self.a_desired = min(output_a_target, self.a_desired + 3.0 * self.dt)
 
     standstill_nudge_gap = STOP_DISTANCE - 0.5
     moving_leads = [lead for lead in (self.lead_one, self.lead_two)

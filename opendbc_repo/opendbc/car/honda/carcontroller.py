@@ -53,12 +53,22 @@ def get_honda_bosch_wind_brake_mps2(v_ego: float) -> float:
   return float(np.interp(v_ego, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441]))
 
 
-def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: bool, long_active: bool) -> bool:
+def get_honda_bosch_gas_lookup(car_fingerprint, v_ego: float, default_bp, default_v):
+  if car_fingerprint == CAR.HONDA_CRV_5G:
+    top_gas = float(np.interp(v_ego, [10.0, 28.0], [950.0, 1350.0]))
+    return [-0.20, 2.0], [0.0, top_gas]
+  return default_bp, default_v
+
+
+def update_honda_bosch_braking(braking: bool, gas_pedal_force: float, stopping: bool, long_active: bool,
+                               accel: float | None = None) -> bool:
   """Select Bosch brake mode from the same road-load-adjusted force used for gas."""
   if not long_active:
     return False
   if stopping:
     return True
+  if accel is not None and accel > 0.05:
+    return False
   if braking:
     return gas_pedal_force <= BOSCH_BRAKE_FORCE_RELEASE
   return gas_pedal_force < BOSCH_BRAKE_FORCE_ON
@@ -177,7 +187,7 @@ def process_hud_alert(hud_alert):
 LEARNER_META_PATH = "/data/honda_learner_meta.json"
 
 # Bump when learner semantics change so persisted values are discarded
-LEARN_VERSION = 2
+LEARN_VERSION = 3
 
 # Learner tick cadence: update() runs every 2 controller frames at 100 Hz → 0.02 s per tick
 _LEARNER_DT = 2 * DT_CTRL  # 0.02 s
@@ -336,7 +346,7 @@ class LongGasLearner:
         if gas_error != 0.0 and gas_pedal_force > 0.0:
           if self.car_fingerprint in ("HONDA_INSIGHT", "HONDA_CIVIC_BOSCH"):  # gas pedal reacts too slowly
             learn_speed = 150.0
-          elif self.car_fingerprint in ("ACURA_RDX_3G", "ACURA_RDX_3G_MMR"):  # Prevent overreacting to turbo lag
+          elif self.car_fingerprint in ("ACURA_RDX_3G", "ACURA_RDX_3G_MMR", "HONDA_CRV_5G"):  # Prevent overreacting to turbo lag
             learn_speed = 300.0
           else:
             learn_speed = 50.0
@@ -345,8 +355,8 @@ class LongGasLearner:
             _HARD_LO, _HARD_HI
           )
 
-        # --- windfactor update ---
-        if gas_error != 0.0 and v_ego > 0.0:
+        # --- windfactor update (gas_pedal_force > 0 gate; do not learn wind drag while coasting/braking) ---
+        if gas_error != 0.0 and v_ego > 0.0 and gas_pedal_force > 0.0:
           if self.car_fingerprint in ("ACURA_RDX_3G", "ACURA_RDX_3G_MMR"):  # Faster reaction
             wind_learn_speed = 100.0
           else:
@@ -358,10 +368,9 @@ class LongGasLearner:
           )
 
     # Anti-windup shadows — operate on lagged command as well (G1 requirement)
-    # Use gas_pedal_force (computed from lagged-or-current path) for saturation check
     if gas_pedal_force <= 0.0:
-      # Braking: don't reduce windfactor, allow increases
-      self.raw_windfactor = max(self.raw_windfactor, self.windfactor_before_brake)
+      # Coasting/braking: freeze raw_windfactor at pre-brake shadow instead of ratcheting upward
+      self.raw_windfactor = self.windfactor_before_brake
     else:
       self.windfactor_before_brake = self.raw_windfactor
 
@@ -412,7 +421,7 @@ def _load_learner_meta(car_fingerprint: str) -> tuple[float, float]:
   from the sidecar JSON. Returns (1.0, 1.0) on any mismatch or error.
 
   The sidecar JSON is written atomically (temp-then-rename) and carries:
-    {"car_fingerprint": "...", "learn_version": 2}
+    {"car_fingerprint": "...", "learn_version": 3}
 
   Note: does NOT touch params_keys.h (boot-brick trap on this fork).
   """
@@ -675,7 +684,12 @@ class CarController(CarControllerBase):
     live = self._get_live_tuning_params()
     actuators = CC.actuators
     hud_control = CC.hudControl
-    hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
+    if hud_control.speedVisible and not getattr(CS, "is_metric", False) and not getattr(CS, "dynamic_v_cruise_units", False):
+      # Match imperial Honda dash truncation floor(CRUISE_SPEED_KPH * 0.621371) so +/- steps by exact 1 mph
+      target_mph = round(hud_control.setSpeed * CV.MS_TO_MPH)
+      hud_v_cruise = math.ceil(target_mph * CV.MPH_TO_KPH)
+    else:
+      hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
     gas_interceptor_command = 0.0
     min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
@@ -863,20 +877,27 @@ class CarController(CarControllerBase):
 
           # Anchor the learned gain at min_gas so gasfactor scales the offset from the pedal-on
           # threshold rather than shifting where gas starts.
-          min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
+          gas_bp, gas_v = get_honda_bosch_gas_lookup(
+            self.CP.carFingerprint, CS.out.vEgo,
+            self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V,
+          )
+          min_gas = gas_bp[0]
           self.gas = float(np.interp((gas_pedal_force - min_gas) * self._learner.gasfactor + min_gas,
-                                     self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+                                     gas_bp, gas_v))
           # limit gas ramp to 60 units per frame, matches stock. Higher sometimes causes powertrain
           # to ignore gas command.
           self.gas = min(self.gas, max(60.0, self.bosch_last_gas + 60.0))
           self.bosch_last_gas = self.gas
 
           stopping = actuators.longControlState == LongCtrlState.stopping
-          self.bosch_braking = update_honda_bosch_braking(self.bosch_braking, gas_pedal_force, stopping, CC.longActive)
+          self.bosch_braking = update_honda_bosch_braking(
+            self.bosch_braking, gas_pedal_force, stopping, CC.longActive, accel=self.accel,
+          )
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(
             hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
-                                         self.stopping_counter, self.CP.carFingerprint, gas_pedal_force, self.bosch_braking)
+                                         self.stopping_counter, self.CP.carFingerprint, gas_pedal_force, self.bosch_braking,
+                                         min_gas_accel=min_gas)
           )
         else:
           apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from openpilot.starpilot.common.per_car_calibration import (
+  CRV_DEFAULT_MOUNT_ROLL_OFFSET_DEG,
   ID4_DEFAULT_CAMERA_OFFSET_M,
   ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG,
   get_mount_roll_offset_deg,
@@ -143,17 +144,27 @@ def test_per_car_mount_roll_offset_is_isolated_and_preserves_manual_override(tmp
   id4_cp = _StubCP("VOLKSWAGEN_ID4_MK1", brand="volkswagen")
 
   assert get_mount_roll_offset_deg(params, "VOLKSWAGEN_ID4_MK1", bank_path=bank_path) == ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG
-  assert get_mount_roll_offset_deg(params, "HONDA_CRV_5G", bank_path=bank_path) == 0.0
+  assert get_mount_roll_offset_deg(params, "HONDA_CRV_5G", bank_path=bank_path) == CRV_DEFAULT_MOUNT_ROLL_OFFSET_DEG
+
+  # Migrate pre-existing banked CR-V 0.0 -> +0.8 without stomping a custom override or ID.4's -1.45
+  bank_path.write_text(json.dumps({
+    "version": 1,
+    "cars": {
+      "HONDA_CRV_5G": {"blobs": {}, "camera_offset": 0.0, "mount_roll_offset_deg": 0.0},
+    },
+  }, indent=2), encoding="utf-8")
+  assert get_mount_roll_offset_deg(params, "HONDA_CRV_5G", bank_path=bank_path) == CRV_DEFAULT_MOUNT_ROLL_OFFSET_DEG
 
   sync_per_car_calibration(params, None, id4_cp, bank_path=bank_path)
   assert get_mount_roll_offset_deg(params, "VOLKSWAGEN_ID4_MK1", bank_path=bank_path) == ID4_DEFAULT_MOUNT_ROLL_OFFSET_DEG
 
   bank = json.loads(bank_path.read_text(encoding="utf-8"))
   bank["cars"]["VOLKSWAGEN_ID4_MK1"]["mount_roll_offset_deg"] = -1.6
+  bank["cars"]["HONDA_CRV_5G"]["mount_roll_offset_deg"] = 1.0
   bank_path.write_text(json.dumps(bank, indent=2), encoding="utf-8")
 
   sync_per_car_calibration(params, id4_cp, crv_cp, bank_path=bank_path)
-  assert get_mount_roll_offset_deg(params, "HONDA_CRV_5G", bank_path=bank_path) == 0.0
+  assert get_mount_roll_offset_deg(params, "HONDA_CRV_5G", bank_path=bank_path) == 1.0
   assert get_mount_roll_offset_deg(params, "VOLKSWAGEN_ID4_MK1", bank_path=bank_path) == -1.6
 
   sync_per_car_calibration(params, crv_cp, id4_cp, bank_path=bank_path)
